@@ -1,0 +1,50 @@
+# Writing Outline
+
+원본 영어 작문 아웃라인 DOCX를 모바일과 PC에서 작성하고, DOCX 다운로드 또는 학원 서버 제출을 할 수 있는 Cloudflare Pages 사이트입니다.
+
+## 기능
+
+- 원본 20개 아웃라인 칸 편집
+- 아웃라인 아래 전체 ESSAY 편집 영역
+- 브라우저 임시 저장(비밀번호 제외)
+- 원본 DOCX 구조를 유지한 파일 생성
+- ID/비밀번호 로그인 후 서버 제출
+- 이름·반·회차가 모두 있을 때만 사용자 지정 파일명 사용
+
+## Cloudflare Pages 배포
+
+- Framework preset: `Vite`
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Root directory: `/`
+
+`functions/api/submit.js`는 Pages Function으로 자동 배포됩니다.
+
+## 쿠키 설정
+
+`functions/api/submit.js` 맨 위의 값을 변경합니다.
+
+```js
+const SEND_CONFIGURED_COOKIES = 1;
+```
+
+- `1`: 지정된 SED3/EIS/ID/비밀번호 보조 쿠키를 함께 전송
+- `0`: 보조 쿠키를 전송하지 않음
+
+제공된 전체 쿠키 배열은 Cloudflare Pages의 암호화 환경변수 `ACADEMY_CONFIGURED_COOKIES_JSON`에 저장합니다. 코드나 GitHub에는 값을 넣지 않습니다. 배열 안의 `입력했던ID`/`{{ID}}`, `입력했던비밀번호`/`{{PASSWORD}}`는 제출할 때 입력값으로 바뀝니다.
+
+로그인 응답에서 새로 발급된 세션 쿠키는 인증 유지에 필요하므로 두 설정 모두에서 서버 내부 요청에만 전달됩니다. 환경변수에 고정 ASP 세션 쿠키가 있어도 사용하지 않고 로그인 때마다 새로 발급받습니다.
+
+## 로컬 확인
+
+```bash
+npm install
+npm test
+npm run build
+```
+
+Cloudflare Pages Function까지 로컬에서 확인하려면 Wrangler로 빌드 결과를 실행합니다.
+
+```bash
+npx wrangler pages dev dist
+```
