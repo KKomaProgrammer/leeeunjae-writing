@@ -1,8 +1,12 @@
 const SEND_CONFIGURED_COOKIES = 1;
 
+const LOGIN_PAGE_URL = 'https://m10.hakwonsarang.co.kr/m/m_login.asp';
 const LOGIN_URL = 'https://m10.hakwonsarang.co.kr/m/login_proc.asp';
 const UPLOAD_FORM_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp';
 const UPLOAD_PROC_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp';
+const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
+const MOBILE_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 const FALLBACK_FILE_FIELD = 'file1';
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
 
@@ -43,10 +47,21 @@ function cookieHeader(jar) {
   return Array.from(jar, ([name, value]) => `${name}=${value}`).join('; ');
 }
 
-function freshSessionValue(jar) {
-  if (jar.has('ASPSESSIONIDSCTADTBS')) return jar.get('ASPSESSIONIDSCTADTBS');
-  const session = Array.from(jar).find(([name]) => name.startsWith('ASPSESSIONID'));
-  return session?.[1] ?? '';
+function safeCookieValue(value) {
+  return Array.from(String(value ?? ''), (character) => {
+    const code = character.codePointAt(0);
+    const allowed =
+      code === 0x21 ||
+      (code >= 0x23 && code <= 0x2b) ||
+      (code >= 0x2d && code <= 0x3a) ||
+      (code >= 0x3c && code <= 0x5b) ||
+      (code >= 0x5d && code <= 0x7e);
+    return allowed ? character : encodeURIComponent(character);
+  }).join('');
+}
+
+function isFreshOnlyCookie(name) {
+  return /^ASPSESSIONID/i.test(name) || name.toUpperCase() === 'H2';
 }
 
 function readSecretCookies(env, studentId, password) {
@@ -64,15 +79,21 @@ function readSecretCookies(env, studentId, password) {
   }
 
   return parsed
-    .filter((cookie) => cookie && typeof cookie.name === 'string' && cookie.value != null)
-    .filter((cookie) => !cookie.name.startsWith('ASPSESSIONID'))
+    .filter(
+      (cookie) =>
+        cookie &&
+        typeof cookie.name === 'string' &&
+        /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(cookie.name) &&
+        cookie.value != null,
+    )
+    .filter((cookie) => !isFreshOnlyCookie(cookie.name))
     .map((cookie) => [
       cookie.name,
       String(cookie.value)
-        .replaceAll('{{ID}}', studentId)
-        .replaceAll('{{PASSWORD}}', password)
-        .replaceAll('입력했던ID', studentId)
-        .replaceAll('입력했던비밀번호', password),
+        .replaceAll('{{ID}}', safeCookieValue(studentId))
+        .replaceAll('{{PASSWORD}}', safeCookieValue(password))
+        .replaceAll('입력했던ID', safeCookieValue(studentId))
+        .replaceAll('입력했던비밀번호', safeCookieValue(password)),
     ]);
 }
 
@@ -80,12 +101,11 @@ function addConfiguredCookies(jar, studentId, password, env) {
   if (SEND_CONFIGURED_COOKIES !== 1) return;
 
   const configured = [
-    ['ASPSESSIONIDSCTADTBS', freshSessionValue(jar)],
     ['ml1m1chk', 'true'],
     ['ml2m2chk', 'true'],
-    ['ml2m2', encodeURIComponent(password)],
+    ['ml2m2', safeCookieValue(password)],
     ['mlacamcode', 'SED3'],
-    ['ml1m1', encodeURIComponent(studentId)],
+    ['ml1m1', safeCookieValue(studentId)],
     ['EIS', 'classchoicemethod=1&BranchGRCODE=SED3'],
     ...readSecretCookies(env, studentId, password),
   ];
@@ -113,14 +133,27 @@ function decodeRemote(buffer, headers) {
   }
 }
 
+function resolveAcademyUrl(value, baseUrl) {
+  try {
+    const candidate = new URL(value, baseUrl);
+    if (candidate.protocol !== 'https:' || !ACADEMY_HOSTS.has(candidate.hostname)) return '';
+    return candidate.toString();
+  } catch {
+    return '';
+  }
+}
+
 async function remoteFetch(url, init, jar) {
+  const safeUrl = resolveAcademyUrl(url, LOGIN_PAGE_URL);
+  if (!safeUrl) throw new Error('학원 사이트가 허용되지 않은 주소로 이동하려고 했습니다.');
+
   const headers = new Headers(init.headers ?? {});
   const cookies = cookieHeader(jar);
   if (cookies) headers.set('cookie', cookies);
   headers.set('accept-language', 'ko-KR,ko;q=0.9,en;q=0.7');
-  headers.set('user-agent', 'Mozilla/5.0 (compatible; WritingOutline/1.0)');
+  headers.set('user-agent', MOBILE_USER_AGENT);
 
-  const response = await fetch(url, {
+  const response = await fetch(safeUrl, {
     ...init,
     headers,
     redirect: 'manual',
@@ -130,7 +163,7 @@ async function remoteFetch(url, init, jar) {
   return {
     status: response.status,
     headers: response.headers,
-    url,
+    url: safeUrl,
     text: decodeRemote(buffer, response.headers),
   };
 }
@@ -143,7 +176,8 @@ async function fetchFollowingRedirects(url, init, jar, maxRedirects = 5) {
     const result = await remoteFetch(currentUrl, currentInit, jar);
     const location = result.headers.get('location');
     if (result.status < 300 || result.status >= 400 || !location) return result;
-    currentUrl = new URL(location, currentUrl).toString();
+    currentUrl = resolveAcademyUrl(location, result.url);
+    if (!currentUrl) throw new Error('학원 사이트가 허용되지 않은 주소로 이동하려고 했습니다.');
     currentInit = { method: 'GET', headers: { referer: result.url } };
   }
   throw new Error('학원 사이트의 이동 응답이 너무 많습니다.');
@@ -170,6 +204,46 @@ function parseAttributes(tag) {
   return attributes;
 }
 
+export function extractClientRedirect(html, baseUrl = LOGIN_URL) {
+  const source = String(html ?? '');
+
+  for (const match of source.matchAll(/<meta\b[^>]*>/gi)) {
+    const attributes = parseAttributes(match[0]);
+    if ((attributes['http-equiv'] ?? '').toLowerCase() !== 'refresh') continue;
+    const target = (attributes.content ?? '').match(/(?:^|;)\s*url\s*=\s*(?:"([^"]*)"|'([^']*)'|(.+))$/i);
+    const resolved = resolveAcademyUrl(target?.[1] ?? target?.[2] ?? target?.[3] ?? '', baseUrl);
+    if (resolved) return resolved;
+  }
+
+  const patterns = [
+    /(?:window\.|document\.|top\.)?location(?:\.href)?\s*=\s*(["'])([^"']+)\1/i,
+    /(?:window\.|document\.|top\.)?location\.(?:assign|replace)\(\s*(["'])([^"']+)\1\s*\)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (!match) continue;
+    const resolved = resolveAcademyUrl(decodeEntities(match[2]).replace(/\\\//g, '/'), baseUrl);
+    if (resolved) return resolved;
+  }
+  return '';
+}
+
+async function followAcademyNavigation(initialResult, jar, maxRedirects = 5) {
+  let result = initialResult;
+
+  for (let count = 0; count <= maxRedirects; count += 1) {
+    const httpRedirect =
+      result.status >= 300 && result.status < 400
+        ? resolveAcademyUrl(result.headers.get('location') ?? '', result.url)
+        : '';
+    const clientRedirect = httpRedirect ? '' : extractClientRedirect(result.text, result.url);
+    const nextUrl = httpRedirect || clientRedirect;
+    if (!nextUrl) return result;
+    result = await remoteFetch(nextUrl, { method: 'GET', headers: { referer: result.url } }, jar);
+  }
+  throw new Error('학원 사이트의 이동 응답이 너무 많습니다.');
+}
+
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -192,10 +266,7 @@ export function extractUploadForm(html) {
 
   let action = UPLOAD_PROC_URL;
   if (formAttributes.action) {
-    const candidate = new URL(formAttributes.action, UPLOAD_FORM_URL);
-    if (candidate.protocol === 'https:' && candidate.hostname === 'm10.hakwonsarang.co.kr') {
-      action = candidate.toString();
-    }
+    action = resolveAcademyUrl(formAttributes.action, UPLOAD_FORM_URL) || action;
   }
 
   return {
@@ -210,8 +281,26 @@ function extractAlert(html) {
   return match ? decodeEntities(match[2].replace(/\\n/g, ' ').replace(/\\(["'])/g, '$1')).trim() : '';
 }
 
-function looksLikeLogin(html) {
-  return /name\s*=\s*["']txtmb_(?:id|pw)["']/i.test(html) || /login_proc\.asp/i.test(html);
+export function looksLikeLoginPage(html) {
+  const fieldNames = new Set();
+  for (const match of String(html ?? '').matchAll(/<input\b[^>]*>/gi)) {
+    const attributes = parseAttributes(match[0]);
+    if (attributes.name) fieldNames.add(attributes.name.toLowerCase());
+  }
+  return fieldNames.has('txtmb_id') && fieldNames.has('txtmb_pw');
+}
+
+export function containsLoginRequiredMessage(html) {
+  const text = decodeEntities(
+    String(html ?? '')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  ).replace(/\s+/g, ' ');
+  return (
+    /로그인\s*후\s*이용해\s*주십시오/.test(text) ||
+    /로그인\s*후\s*이용해\s*주십시오/.test(extractAlert(html))
+  );
 }
 
 function isFailureMessage(message) {
@@ -258,6 +347,16 @@ export async function onRequestPost({ request, env }) {
     }
 
     const jar = new Map();
+    const loginPage = await fetchFollowingRedirects(
+      LOGIN_PAGE_URL,
+      { method: 'GET', headers: { accept: 'text/html,application/xhtml+xml' } },
+      jar,
+    );
+    if (loginPage.status >= 400) {
+      throw new Error(`로그인 페이지를 불러오지 못했습니다. (${loginPage.status})`);
+    }
+    addConfiguredCookies(jar, studentId, password, env);
+
     const loginBody = new URLSearchParams({
       gotarget: 'mmsc',
       IsMobile: 'T',
@@ -273,30 +372,41 @@ export async function onRequestPost({ request, env }) {
       LOGIN_URL,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        headers: {
+          accept: 'text/html,application/xhtml+xml',
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          origin: new URL(LOGIN_URL).origin,
+          referer: LOGIN_PAGE_URL,
+        },
         body: loginBody.toString(),
       },
       jar,
     );
-    addConfiguredCookies(jar, studentId, password, env);
 
     if (login.status >= 400) throw new Error(`로그인 서버가 오류를 반환했습니다. (${login.status})`);
     const loginAlert = extractAlert(login.text);
     if (isFailureMessage(loginAlert)) throw new Error(loginAlert);
-
-    if (login.status >= 300 && login.status < 400 && login.headers.get('location')) {
-      await fetchFollowingRedirects(new URL(login.headers.get('location'), LOGIN_URL).toString(), { method: 'GET' }, jar);
+    const loginLanding = await followAcademyNavigation(login, jar);
+    if (loginLanding.status >= 400) {
+      throw new Error(`로그인 후 화면을 불러오지 못했습니다. (${loginLanding.status})`);
+    }
+    const landingAlert = extractAlert(loginLanding.text);
+    if (isFailureMessage(landingAlert)) throw new Error(landingAlert);
+    if (containsLoginRequiredMessage(loginLanding.text) || looksLikeLoginPage(loginLanding.text)) {
+      throw new Error('학원 로그인 세션이 만들어지지 않았습니다. ID와 비밀번호를 확인해 주세요.');
     }
 
     const uploadPage = await fetchFollowingRedirects(
       UPLOAD_FORM_URL,
-      { method: 'GET', headers: { referer: LOGIN_URL } },
+      { method: 'GET', headers: { referer: loginLanding.url } },
       jar,
     );
     if (uploadPage.status >= 400) {
       throw new Error(`제출 화면을 불러오지 못했습니다. (${uploadPage.status})`);
     }
-    if (looksLikeLogin(uploadPage.text)) throw new Error('ID 또는 비밀번호를 확인해 주세요.');
+    if (containsLoginRequiredMessage(uploadPage.text) || looksLikeLoginPage(uploadPage.text)) {
+      throw new Error('학원 로그인 세션이 만들어지지 않았습니다. ID와 비밀번호를 확인해 주세요.');
+    }
 
     const uploadForm = extractUploadForm(uploadPage.text);
     const outgoing = new FormData();
@@ -305,11 +415,17 @@ export async function onRequestPost({ request, env }) {
 
     const submitted = await fetchFollowingRedirects(
       uploadForm.action || UPLOAD_PROC_URL,
-      { method: 'POST', headers: { referer: UPLOAD_FORM_URL }, body: outgoing },
+      {
+        method: 'POST',
+        headers: { origin: new URL(UPLOAD_FORM_URL).origin, referer: UPLOAD_FORM_URL },
+        body: outgoing,
+      },
       jar,
     );
     if (submitted.status >= 400) throw new Error(`제출 서버가 오류를 반환했습니다. (${submitted.status})`);
-    if (looksLikeLogin(submitted.text)) throw new Error('로그인 상태가 유지되지 않았습니다. 다시 시도해 주세요.');
+    if (containsLoginRequiredMessage(submitted.text) || looksLikeLoginPage(submitted.text)) {
+      throw new Error('로그인 상태가 유지되지 않았습니다. 다시 시도해 주세요.');
+    }
 
     const remoteMessage = extractAlert(submitted.text);
     if (isFailureMessage(remoteMessage)) throw new Error(remoteMessage);
