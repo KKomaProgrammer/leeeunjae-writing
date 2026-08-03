@@ -16,9 +16,12 @@
 - Framework preset: `Vite`
 - Build command: `npm run build`
 - Build output directory: `dist`
+- Deploy command: `npm run deploy`
 - Root directory: `/`
 
 `functions/api/submit.js`는 Pages Function으로 자동 배포됩니다.
+
+배포 명령에는 Workers용 `npx wrangler deploy`를 사용하지 않습니다. Pages 전용 명령인 `wrangler pages deploy dist`를 사용해야 합니다.
 
 ## 쿠키 설정
 
