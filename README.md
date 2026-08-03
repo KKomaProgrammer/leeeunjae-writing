@@ -14,6 +14,7 @@
 ## Cloudflare Pages 배포
 
 - Framework preset: `Vite`
+- Cloudflare project name: `eunjaewriting`
 - Build command: `npm run build`
 - Build output directory: `dist`
 - Deploy command: `npm run deploy`
