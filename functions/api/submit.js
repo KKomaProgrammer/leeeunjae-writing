@@ -204,46 +204,6 @@ function parseAttributes(tag) {
   return attributes;
 }
 
-export function extractClientRedirect(html, baseUrl = LOGIN_URL) {
-  const source = String(html ?? '');
-
-  for (const match of source.matchAll(/<meta\b[^>]*>/gi)) {
-    const attributes = parseAttributes(match[0]);
-    if ((attributes['http-equiv'] ?? '').toLowerCase() !== 'refresh') continue;
-    const target = (attributes.content ?? '').match(/(?:^|;)\s*url\s*=\s*(?:"([^"]*)"|'([^']*)'|(.+))$/i);
-    const resolved = resolveAcademyUrl(target?.[1] ?? target?.[2] ?? target?.[3] ?? '', baseUrl);
-    if (resolved) return resolved;
-  }
-
-  const patterns = [
-    /(?:window\.|document\.|top\.)?location(?:\.href)?\s*=\s*(["'])([^"']+)\1/i,
-    /(?:window\.|document\.|top\.)?location\.(?:assign|replace)\(\s*(["'])([^"']+)\1\s*\)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = source.match(pattern);
-    if (!match) continue;
-    const resolved = resolveAcademyUrl(decodeEntities(match[2]).replace(/\\\//g, '/'), baseUrl);
-    if (resolved) return resolved;
-  }
-  return '';
-}
-
-async function followAcademyNavigation(initialResult, jar, maxRedirects = 5) {
-  let result = initialResult;
-
-  for (let count = 0; count <= maxRedirects; count += 1) {
-    const httpRedirect =
-      result.status >= 300 && result.status < 400
-        ? resolveAcademyUrl(result.headers.get('location') ?? '', result.url)
-        : '';
-    const clientRedirect = httpRedirect ? '' : extractClientRedirect(result.text, result.url);
-    const nextUrl = httpRedirect || clientRedirect;
-    if (!nextUrl) return result;
-    result = await remoteFetch(nextUrl, { method: 'GET', headers: { referer: result.url } }, jar);
-  }
-  throw new Error('학원 사이트의 이동 응답이 너무 많습니다.');
-}
-
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -279,6 +239,43 @@ export function extractUploadForm(html) {
 function extractAlert(html) {
   const match = String(html).match(/alert\s*\(\s*(["'])([\s\S]{0,500}?)\1\s*\)/i);
   return match ? decodeEntities(match[2].replace(/\\n/g, ' ').replace(/\\(["'])/g, '$1')).trim() : '';
+}
+
+function decodeScriptString(value) {
+  return decodeEntities(String(value ?? ''))
+    .replace(/\\u([0-9a-f]{4})/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/\\x([0-9a-f]{2})/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/\\r\\n|\\n|\\r|\\t/g, ' ')
+    .replace(/\\(["'\\/])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractScriptVariable(html, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const doubleQuoted = new RegExp(
+    `(?:var\\s+)?${escapedName}\\s*=\\s*"((?:\\\\.|[^"\\\\])*)"`,
+    'i',
+  );
+  const singleQuoted = new RegExp(
+    `(?:var\\s+)?${escapedName}\\s*=\\s*'((?:\\\\.|[^'\\\\])*)'`,
+    'i',
+  );
+  const source = String(html ?? '');
+  const match = source.match(doubleQuoted) ?? source.match(singleQuoted);
+  return match ? decodeScriptString(match[1]) : null;
+}
+
+export function extractLoginFailure(html) {
+  const errorCode = extractScriptVariable(html, 'strErrCode');
+  if (errorCode !== null) {
+    if (!errorCode) return '';
+    const message = extractScriptVariable(html, 'strMsg');
+    return message || `로그인에 실패했습니다. (${errorCode})`;
+  }
+
+  const alertMessage = extractAlert(html);
+  return isFailureMessage(alertMessage) ? alertMessage : '';
 }
 
 export function looksLikeLoginPage(html) {
@@ -374,7 +371,7 @@ export async function onRequestPost({ request, env }) {
         method: 'POST',
         headers: {
           accept: 'text/html,application/xhtml+xml',
-          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'content-type': 'application/x-www-form-urlencoded',
           origin: new URL(LOGIN_URL).origin,
           referer: LOGIN_PAGE_URL,
         },
@@ -384,21 +381,12 @@ export async function onRequestPost({ request, env }) {
     );
 
     if (login.status >= 400) throw new Error(`로그인 서버가 오류를 반환했습니다. (${login.status})`);
-    const loginAlert = extractAlert(login.text);
-    if (isFailureMessage(loginAlert)) throw new Error(loginAlert);
-    const loginLanding = await followAcademyNavigation(login, jar);
-    if (loginLanding.status >= 400) {
-      throw new Error(`로그인 후 화면을 불러오지 못했습니다. (${loginLanding.status})`);
-    }
-    const landingAlert = extractAlert(loginLanding.text);
-    if (isFailureMessage(landingAlert)) throw new Error(landingAlert);
-    if (containsLoginRequiredMessage(loginLanding.text) || looksLikeLoginPage(loginLanding.text)) {
-      throw new Error('학원 로그인 세션이 만들어지지 않았습니다. ID와 비밀번호를 확인해 주세요.');
-    }
+    const loginFailure = extractLoginFailure(login.text);
+    if (loginFailure) throw new Error(loginFailure);
 
     const uploadPage = await fetchFollowingRedirects(
       UPLOAD_FORM_URL,
-      { method: 'GET', headers: { referer: loginLanding.url } },
+      { method: 'GET', headers: { referer: LOGIN_URL } },
       jar,
     );
     if (uploadPage.status >= 400) {

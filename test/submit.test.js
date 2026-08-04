@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   containsLoginRequiredMessage,
-  extractClientRedirect,
+  extractLoginFailure,
   extractUploadForm,
   looksLikeLoginPage,
   onRequestPost,
@@ -73,16 +73,33 @@ describe('academy login response detection', () => {
     expect(containsLoginRequiredMessage('<div>파일을 올려 주십시오</div>')).toBe(false);
   });
 
-  it('follows only academy client-side redirects', () => {
-    expect(
-      extractClientRedirect(
-        `<script>window.location.href='/m/acam_module/SED3/m_sr01_form.asp';</script>`,
-        'https://m10.hakwonsarang.co.kr/m/start.asp',
-      ),
-    ).toBe('https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp');
-    expect(
-      extractClientRedirect(`<script>location.replace('https://example.com/steal')</script>`),
-    ).toBe('');
+  it('uses strErrCode instead of an alert inside an unexecuted branch', () => {
+    const successResponse = `
+      <script>
+        var strMsg = "";
+        var strErrCode = "";
+        if (strErrCode!="") {
+          alert("Error: Wrong Data");
+          location.href="m_login.asp?acamcode=SED3";
+        } else {
+          location.href="/m/acam_module/SED3/m_sr01_form.asp";
+        }
+      </script>
+    `;
+    expect(extractLoginFailure(successResponse)).toBe('');
+  });
+
+  it('returns the detailed upstream login error when strErrCode is set', () => {
+    const failureResponse = `
+      <script>
+        var strMsg = "등록된 아이디가 없습니다.\\n\\n아이디를 확인하신 후 다시 로그인 해주십시오.";
+        var strErrCode = "NoneID";
+        if (strErrCode!="") alert("Error: Wrong Data");
+      </script>
+    `;
+    expect(extractLoginFailure(failureResponse)).toBe(
+      '등록된 아이디가 없습니다. 아이디를 확인하신 후 다시 로그인 해주십시오.',
+    );
   });
 });
 
@@ -101,19 +118,24 @@ describe('academy login cookie flow', () => {
           });
         case 2:
           return upstreamResponse(
-            `<script>window.location.href='https://m10.hakwonsarang.co.kr/m/home.asp';</script>`,
+            `<script>
+              var strMsg = "";
+              var strErrCode = "";
+              if (strErrCode!="") {
+                alert("Error: Wrong Data");
+                location.href="m_login.asp?acamcode=SED3";
+              }
+            </script>`,
             { cookies: ['academyAuth=logged-in; Path=/'] },
           );
         case 3:
-          return upstreamResponse('<html>home</html>');
-        case 4:
           return upstreamResponse(`
             <form method="post" action="m_sr01_form_proc.asp">
               <input type="hidden" name="mode" value="write">
               <input type="file" name="strFile">
             </form>
           `);
-        case 5:
+        case 4:
           return upstreamResponse(`<script>alert('제출되었습니다.')</script>`);
         default:
           throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -152,7 +174,6 @@ describe('academy login cookie flow', () => {
     expect(calls.map((call) => [call.url, call.init.method])).toEqual([
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
-      ['https://m10.hakwonsarang.co.kr/m/home.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
     ]);
@@ -168,9 +189,9 @@ describe('academy login cookie flow', () => {
     expect(loginCookies).not.toContain('stale-route');
     expect(calls[1].headers.get('referer')).toBe('https://m10.hakwonsarang.co.kr/m/m_login.asp');
 
-    const uploadCookies = calls[3].headers.get('cookie');
+    const uploadCookies = calls[2].headers.get('cookie');
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
-    expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
+    expect(calls[3].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
   });
 });
