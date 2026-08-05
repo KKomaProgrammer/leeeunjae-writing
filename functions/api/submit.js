@@ -7,7 +7,6 @@ const UPLOAD_PROC_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr0
 const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
-const FALLBACK_FILE_FIELD = 'file1';
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
 
 function json(data, status = 200) {
@@ -204,6 +203,86 @@ function parseAttributes(tag) {
   return attributes;
 }
 
+function hasHtmlAttribute(tag, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\s${escapedName}(?:\\s*=|\\s|/?>)`, 'i').test(tag);
+}
+
+function extractSelectValues(selectTag) {
+  const openingTag = selectTag.match(/<select\b[^>]*>/i)?.[0] ?? '';
+  const selectAttributes = parseAttributes(openingTag);
+  if (!selectAttributes.name || hasHtmlAttribute(openingTag, 'disabled')) return [];
+
+  const options = Array.from(selectTag.matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/gi), (match) => {
+    const optionTag = match[0].match(/<option\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(optionTag);
+    return {
+      selected: hasHtmlAttribute(optionTag, 'selected'),
+      disabled: hasHtmlAttribute(optionTag, 'disabled'),
+      value: attributes.value ?? decodeEntities(match[1].replace(/<[^>]+>/g, '')).trim(),
+    };
+  }).filter((option) => !option.disabled);
+
+  const selected = options.filter((option) => option.selected);
+  const values = selected.length ? selected : options.slice(0, 1);
+  return values.map((option) => [selectAttributes.name, option.value]);
+}
+
+function extractSuccessfulControls(form) {
+  const fields = [];
+  const submitters = [];
+
+  for (const match of form.matchAll(/<input\b[^>]*>/gi)) {
+    const tag = match[0];
+    const attributes = parseAttributes(tag);
+    const type = (attributes.type ?? 'text').toLowerCase();
+    if (!attributes.name || hasHtmlAttribute(tag, 'disabled')) continue;
+    if (['submit', 'image'].includes(type)) {
+      if (attributes.name) {
+        submitters.push({
+          name: attributes.name,
+          value: attributes.value ?? '',
+          preferred: /등록|제출|저장|확인|upload|submit/i.test(attributes.value ?? ''),
+        });
+      }
+      continue;
+    }
+    if (['file', 'button', 'reset'].includes(type)) continue;
+    if (['checkbox', 'radio'].includes(type) && !hasHtmlAttribute(tag, 'checked')) continue;
+    fields.push([attributes.name, attributes.value ?? (['checkbox', 'radio'].includes(type) ? 'on' : '')]);
+  }
+
+  for (const match of form.matchAll(/<textarea\b[^>]*>[\s\S]*?<\/textarea>/gi)) {
+    const openingTag = match[0].match(/<textarea\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(openingTag);
+    if (!attributes.name || hasHtmlAttribute(openingTag, 'disabled')) continue;
+    const value = match[0].replace(/^<textarea\b[^>]*>/i, '').replace(/<\/textarea>$/i, '');
+    fields.push([attributes.name, decodeEntities(value)]);
+  }
+
+  for (const match of form.matchAll(/<select\b[^>]*>[\s\S]*?<\/select>/gi)) {
+    fields.push(...extractSelectValues(match[0]));
+  }
+
+  for (const match of form.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/gi)) {
+    const openingTag = match[0].match(/<button\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(openingTag);
+    const type = (attributes.type ?? 'submit').toLowerCase();
+    if (type !== 'submit' || !attributes.name || hasHtmlAttribute(openingTag, 'disabled')) continue;
+    const label = decodeEntities(match[0].replace(/^<button\b[^>]*>/i, '').replace(/<\/button>$/i, '').replace(/<[^>]+>/g, ' ')).trim();
+    submitters.push({
+      name: attributes.name,
+      value: attributes.value ?? label,
+      preferred: /등록|제출|저장|확인|upload|submit/i.test(`${attributes.value ?? ''} ${label}`),
+    });
+  }
+
+  const submitter = submitters.find((candidate) => candidate.preferred) ?? submitters[0];
+  if (submitter) fields.push([submitter.name, submitter.value]);
+
+  return fields;
+}
+
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -212,16 +291,13 @@ export function extractUploadForm(html) {
     String(html);
   const openingTag = selected.match(/<form\b[^>]*>/i)?.[0] ?? '';
   const formAttributes = parseAttributes(openingTag);
-  const hiddenFields = [];
+  const fields = extractSuccessfulControls(selected);
   let fileField = '';
 
   for (const match of selected.matchAll(/<input\b[^>]*>/gi)) {
     const attributes = parseAttributes(match[0]);
     const type = (attributes.type ?? 'text').toLowerCase();
     if (type === 'file' && attributes.name && !fileField) fileField = attributes.name;
-    if (type === 'hidden' && attributes.name) {
-      hiddenFields.push([attributes.name, attributes.value ?? '']);
-    }
   }
 
   let action = UPLOAD_PROC_URL;
@@ -231,8 +307,10 @@ export function extractUploadForm(html) {
 
   return {
     action,
-    fileField: fileField || FALLBACK_FILE_FIELD,
-    hiddenFields,
+    method: (formAttributes.method || 'get').toLowerCase(),
+    enctype: (formAttributes.enctype || '').toLowerCase(),
+    fileField,
+    fields,
   };
 }
 
@@ -302,6 +380,48 @@ export function containsLoginRequiredMessage(html) {
 
 function isFailureMessage(message) {
   return /(실패|오류|잘못|없습니다|확인.*(?:아이디|비밀번호)|로그인.*(?:필요|해)|invalid|failed|error)/i.test(message);
+}
+
+function visiblePageText(html) {
+  return decodeEntities(
+    String(html ?? '')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeForMatch(value) {
+  return decodeEntities(String(value ?? ''))
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export function pageContainsFileName(html, fileName) {
+  const expected = normalizeForMatch(fileName);
+  if (!expected) return false;
+  const sources = [String(html ?? ''), visiblePageText(html)];
+  try {
+    sources.push(decodeURIComponent(String(html ?? '').replace(/\+/g, '%20')));
+  } catch {
+    // Malformed percent escapes are common in old ASP pages; raw HTML is still checked.
+  }
+  return sources.some((source) => normalizeForMatch(source).includes(expected));
+}
+
+export function extractSubmissionSuccess(html) {
+  const candidates = [extractAlert(html), visiblePageText(html)].filter(Boolean);
+  return (
+    candidates.find((message) =>
+      /(?:(?:제출|등록|저장|업로드).{0,24}(?:완료|성공|되었습니다|되었)|정상적으로.{0,24}(?:처리|제출|등록|저장|업로드))/i.test(
+        message,
+      ),
+    ) ?? ''
+  );
 }
 
 function safeFileName(value) {
@@ -397,8 +517,14 @@ export async function onRequestPost({ request, env }) {
     }
 
     const uploadForm = extractUploadForm(uploadPage.text);
+    if (!uploadForm.fileField) {
+      throw new Error('학원 제출 화면에서 파일 선택 항목을 찾지 못했습니다. 제출 화면이 변경되었을 수 있습니다.');
+    }
+    if (uploadForm.method !== 'post') {
+      throw new Error('학원 제출 화면의 전송 방식이 POST가 아닙니다. 제출 화면이 변경되었을 수 있습니다.');
+    }
     const outgoing = new FormData();
-    uploadForm.hiddenFields.forEach(([name, value]) => outgoing.append(name, value));
+    uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
     outgoing.set(uploadForm.fileField, file, fileName);
 
     const submitted = await fetchFollowingRedirects(
@@ -418,10 +544,35 @@ export async function onRequestPost({ request, env }) {
     const remoteMessage = extractAlert(submitted.text);
     if (isFailureMessage(remoteMessage)) throw new Error(remoteMessage);
 
+    let confirmedMessage = extractSubmissionSuccess(submitted.text);
+    let fileConfirmed = pageContainsFileName(submitted.text, fileName);
+    if (!confirmedMessage && !fileConfirmed) {
+      const verificationPage = await fetchFollowingRedirects(
+        UPLOAD_FORM_URL,
+        { method: 'GET', headers: { referer: submitted.url } },
+        jar,
+      );
+      if (containsLoginRequiredMessage(verificationPage.text) || looksLikeLoginPage(verificationPage.text)) {
+        throw new Error('제출 후 로그인 상태가 해제되어 파일 등록을 확인하지 못했습니다.');
+      }
+      fileConfirmed = pageContainsFileName(verificationPage.text, fileName);
+    }
+
+    if (!confirmedMessage && !fileConfirmed) {
+      console.warn('Academy upload was not confirmed', {
+        status: submitted.status,
+        finalUrl: submitted.url,
+        fileField: uploadForm.fileField,
+      });
+      throw new Error(
+        '학원 서버에서 파일 등록 완료를 확인하지 못했습니다. 실제 등록이 확인되지 않아 성공으로 처리하지 않았습니다.',
+      );
+    }
+
     return json({
       ok: true,
       fileName,
-      message: remoteMessage || '작문 파일이 제출되었습니다.',
+      message: confirmedMessage || `${fileName} 파일 등록이 확인되었습니다.`,
     });
   } catch (error) {
     console.error('Writing submission failed', error instanceof Error ? error.message : error);

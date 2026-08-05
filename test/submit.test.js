@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   containsLoginRequiredMessage,
   extractLoginFailure,
+  extractSubmissionSuccess,
   extractUploadForm,
   looksLikeLoginPage,
   onRequestPost,
+  pageContainsFileName,
 } from '../functions/api/submit.js';
 
 function upstreamResponse(body, { status = 200, headers = {}, cookies = [] } = {}) {
@@ -31,15 +33,16 @@ describe('remote upload form extraction', () => {
       'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp',
     );
     expect(form.fileField).toBe('strFile');
-    expect(form.hiddenFields).toEqual([
+    expect(form.fields).toEqual([
       ['mode', 'write'],
       ['teacher', 'A&B'],
     ]);
+    expect(form.method).toBe('post');
   });
 
-  it('uses the explicit fallback when the remote page does not expose a file field', () => {
+  it('does not guess a file field when the remote page does not expose one', () => {
     const form = extractUploadForm('<html><body>empty</body></html>');
-    expect(form.fileField).toBe('file1');
+    expect(form.fileField).toBe('');
   });
 
   it('accepts an explicit form action on the academy host', () => {
@@ -51,6 +54,50 @@ describe('remote upload form extraction', () => {
     expect(form.action).toBe(
       'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp',
     );
+  });
+
+  it('keeps successful non-file controls just like browser FormData', () => {
+    const form = extractUploadForm(`
+      <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="mode" value="write">
+        <input type="text" name="subject" value="Writing 1">
+        <input type="checkbox" name="notice" value="Y" checked>
+        <input type="checkbox" name="ignored" value="Y">
+        <textarea name="memo">A&amp;B</textarea>
+        <select name="category"><option value="one">1</option><option value="two" selected>2</option></select>
+        <input type="file" name="upfile">
+        <button type="submit" name="action" value="save">취소</button>
+        <button type="submit" name="action" value="upload">등록</button>
+      </form>
+    `);
+    expect(form.fields).toEqual([
+      ['mode', 'write'],
+      ['subject', 'Writing 1'],
+      ['notice', 'Y'],
+      ['memo', 'A&B'],
+      ['category', 'two'],
+      ['action', 'upload'],
+    ]);
+  });
+});
+
+describe('academy upload confirmation', () => {
+  it('only recognizes explicit completion messages', () => {
+    expect(extractSubmissionSuccess(`<script>alert('파일이 정상적으로 등록되었습니다.')</script>`)).toContain(
+      '등록되었습니다',
+    );
+    expect(extractSubmissionSuccess('<html><body>작문 파일 등록 화면</body></html>')).toBe('');
+  });
+
+  it('finds the exact uploaded filename in text or an encoded link', () => {
+    expect(pageContainsFileName('<a>3반_홍길동_2회_작문.docx</a>', '3반_홍길동_2회_작문.docx')).toBe(true);
+    expect(
+      pageContainsFileName(
+        '<a href="download.asp?name=%EC%9E%91%EB%AC%B8%20%ED%8C%8C%EC%9D%BC%20format.docx">받기</a>',
+        '작문 파일 format.docx',
+      ),
+    ).toBe(true);
+    expect(pageContainsFileName('<div>다른 파일.docx</div>', '작문 파일 format.docx')).toBe(false);
   });
 });
 
@@ -193,5 +240,51 @@ describe('academy login cookie flow', () => {
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
     expect(calls[3].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
+    expect(calls[3].init.body.get('mode')).toBe('write');
+    expect(calls[3].init.body.get('strFile')).toBeInstanceOf(File);
+  });
+
+  it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) return upstreamResponse('<html>login page</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
+        if (call === 2) return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
+        if (call === 3) {
+          return upstreamResponse(`
+            <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
+              <input type="hidden" name="mode" value="write">
+              <input type="text" name="subject" value="Writing">
+              <input type="file" name="strFile">
+            </form>
+          `);
+        }
+        if (call === 4) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
+        if (call === 5) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
+        throw new Error(`Unexpected fetch ${call}`);
+      }),
+    );
+
+    const input = new FormData();
+    input.set('studentId', 'student');
+    input.set('password', 'password');
+    input.set('fileName', '작문 파일 format.docx');
+    input.set(
+      'file',
+      new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01])], 'writing.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    );
+    const response = await onRequestPost({
+      request: new Request('https://eunjaewriting.pages.dev/api/submit', { method: 'POST', body: input }),
+      env: {},
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('실제 등록이 확인되지 않아 성공으로 처리하지 않았습니다'),
+    });
   });
 });
