@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   containsLoginRequiredMessage,
   extractLoginFailure,
+  extractRecordCodes,
   extractSubmissionSuccess,
   extractUploadForm,
   looksLikeLoginPage,
@@ -87,6 +88,15 @@ describe('academy upload confirmation', () => {
       '등록되었습니다',
     );
     expect(extractSubmissionSuccess('<html><body>작문 파일 등록 화면</body></html>')).toBe('');
+  });
+
+  it('extracts record codes from links and script values', () => {
+    expect(
+      [...extractRecordCodes(`
+        <a href="m_sr01_view.asp?rfi_code=R100&amp;page=1">첫 파일</a>
+        <script>var rfi_code = 'R101';</script>
+      `)],
+    ).toEqual(['R100', 'R101']);
   });
 
   it('finds the exact uploaded filename in text or an encoded link', () => {
@@ -183,6 +193,8 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         case 4:
+          return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=old">기존 파일</a>');
+        case 5:
           return upstreamResponse(`<script>alert('제출되었습니다.')</script>`);
         default:
           throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -222,6 +234,7 @@ describe('academy login cookie flow', () => {
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
     ]);
 
@@ -239,9 +252,70 @@ describe('academy login cookie flow', () => {
     const uploadCookies = calls[2].headers.get('cookie');
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
-    expect(calls[3].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
-    expect(calls[3].init.body.get('mode')).toBe('write');
-    expect(calls[3].init.body.get('strFile')).toBeInstanceOf(File);
+    expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
+    expect(calls[4].init.body.get('mode')).toBe('write');
+    expect(calls[4].init.body.get('strFile')).toBeInstanceOf(File);
+  });
+
+  it('follows the real JavaScript list redirect and confirms a new record', async () => {
+    const calls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url, init) => {
+        calls.push({ url: String(url), init });
+        switch (calls.length) {
+          case 1:
+            return upstreamResponse('<html>login</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
+          case 2:
+            return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
+          case 3:
+            return upstreamResponse(`
+              <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
+                <input type="hidden" name="rfi_code" value="">
+                <input type="hidden" name="procType" value="I">
+                <input type="hidden" name="rfi_filename" value="">
+                <input type="file" name="rfi_file">
+              </form>
+            `);
+          case 4:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
+          case 5:
+            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
+          case 6:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
+          default:
+            throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
+        }
+      }),
+    );
+
+    const input = new FormData();
+    input.set('studentId', 'student');
+    input.set('password', 'password');
+    input.set('fileName', '작문 파일 format.docx');
+    input.set(
+      'file',
+      new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01])], 'writing.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    );
+    const response = await onRequestPost({
+      request: new Request('https://eunjaewriting.pages.dev/api/submit', { method: 'POST', body: input }),
+      env: {},
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, fileName: '작문 파일 format.docx' });
+    expect(calls.map((call) => [call.url, call.init.method])).toEqual([
+      ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
+      ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
+    ]);
+    expect(calls[4].init.body.get('rfi_filename')).toBe('작문 파일 format.docx');
+    expect(calls[4].init.body.get('rfi_file')).toBeInstanceOf(File);
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
@@ -261,8 +335,9 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         }
-        if (call === 4) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
-        if (call === 5) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
+        if (call === 4) return upstreamResponse('<html><body>기존 파일 목록</body></html>');
+        if (call === 5) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
+        if (call === 6) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
         throw new Error(`Unexpected fetch ${call}`);
       }),
     );

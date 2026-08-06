@@ -4,6 +4,7 @@ const LOGIN_PAGE_URL = 'https://m10.hakwonsarang.co.kr/m/m_login.asp';
 const LOGIN_URL = 'https://m10.hakwonsarang.co.kr/m/login_proc.asp';
 const UPLOAD_FORM_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp';
 const UPLOAD_PROC_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp';
+const UPLOAD_LIST_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp';
 const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -349,15 +350,51 @@ function extractPageTitle(html) {
   return match ? decodeEntities(match[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim() : '';
 }
 
-function extractScriptLocations(html) {
-  const locations = [];
+function extractScriptRedirectUrls(html, baseUrl = UPLOAD_FORM_URL) {
+  const urls = [];
   const pattern = /(?:location(?:\.href|\.replace)?|window\.location)\s*(?:=|\()\s*(["'])([^"']+)\1/gi;
   let match;
-  while ((match = pattern.exec(String(html ?? ''))) && locations.length < 3) {
-    const resolved = resolveAcademyUrl(decodeEntities(match[2]), UPLOAD_FORM_URL);
-    if (resolved) locations.push(new URL(resolved).pathname + new URL(resolved).search);
+  while ((match = pattern.exec(String(html ?? ''))) && urls.length < 3) {
+    const resolved = resolveAcademyUrl(decodeEntities(match[2]), baseUrl);
+    if (resolved) urls.push(resolved);
   }
-  return [...new Set(locations)];
+  return [...new Set(urls)];
+}
+
+function extractScriptLocations(html, baseUrl = UPLOAD_FORM_URL) {
+  return extractScriptRedirectUrls(html, baseUrl).map((value) => {
+    const url = new URL(value);
+    return `${url.pathname}${url.search}`;
+  });
+}
+
+export function extractRecordCodes(html) {
+  const source = decodeEntities(String(html ?? '')).replace(/%5f/gi, '_');
+  const codes = new Set();
+  const patterns = [
+    /[?&]rfi_code=([^&#"'\s<>]+)/gi,
+    /\brfi_code\s*[:=]\s*(["'])([^"']+)\1/gi,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(source))) {
+      const rawValue = match[2] ?? match[1] ?? '';
+      let value = rawValue;
+      try {
+        value = decodeURIComponent(rawValue);
+      } catch {
+        // Keep the raw legacy ASP value when it contains an incomplete percent escape.
+      }
+      value = value.trim();
+      if (value) codes.add(value);
+    }
+  }
+  return codes;
+}
+
+function hasNewRecord(beforeHtml, afterHtml) {
+  const before = extractRecordCodes(beforeHtml);
+  return [...extractRecordCodes(afterHtml)].some((code) => !before.has(code));
 }
 
 function redactDiagnostic(value, secrets) {
@@ -378,7 +415,7 @@ function makeUploadDiagnostic(submitted, uploadForm, secrets) {
     alert: redactDiagnostic(extractAlert(submitted.text), secrets),
     errorCode: redactDiagnostic(extractScriptVariable(submitted.text, 'strErrCode'), secrets),
     message: redactDiagnostic(extractScriptVariable(submitted.text, 'strMsg'), secrets),
-    locations: extractScriptLocations(submitted.text),
+    locations: extractScriptLocations(submitted.text, submitted.url),
     fileField: uploadForm.fileField,
     fields: [...new Set(uploadForm.fields.map(([name]) => name))].slice(0, 24),
   };
@@ -565,7 +602,21 @@ export async function onRequestPost({ request, env }) {
     }
     const outgoing = new FormData();
     uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
+    const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
+    if (remoteFileNameField) outgoing.set(remoteFileNameField, fileName);
     outgoing.set(uploadForm.fileField, file, fileName);
+
+    const listBeforeSubmission = await fetchFollowingRedirects(
+      UPLOAD_LIST_URL,
+      { method: 'GET', headers: { referer: UPLOAD_FORM_URL } },
+      jar,
+    );
+    const usableListBaseline =
+      listBeforeSubmission.status < 400 &&
+      !containsLoginRequiredMessage(listBeforeSubmission.text) &&
+      !looksLikeLoginPage(listBeforeSubmission.text)
+        ? listBeforeSubmission.text
+        : '';
 
     const submitted = await fetchFollowingRedirects(
       uploadForm.action || UPLOAD_PROC_URL,
@@ -586,7 +637,22 @@ export async function onRequestPost({ request, env }) {
 
     let confirmedMessage = extractSubmissionSuccess(submitted.text);
     let fileConfirmed = pageContainsFileName(submitted.text, fileName);
-    if (!confirmedMessage && !fileConfirmed) {
+    let newRecordConfirmed = false;
+    const scriptRedirect = extractScriptRedirectUrls(submitted.text, submitted.url)[0];
+    if (!confirmedMessage && !fileConfirmed && scriptRedirect) {
+      const redirectedPage = await fetchFollowingRedirects(
+        scriptRedirect,
+        { method: 'GET', headers: { referer: submitted.url } },
+        jar,
+      );
+      if (containsLoginRequiredMessage(redirectedPage.text) || looksLikeLoginPage(redirectedPage.text)) {
+        throw new Error('제출 결과를 확인하는 중 로그인 상태가 해제되었습니다.');
+      }
+      confirmedMessage = extractSubmissionSuccess(redirectedPage.text);
+      fileConfirmed = pageContainsFileName(redirectedPage.text, fileName);
+      newRecordConfirmed = Boolean(usableListBaseline) && hasNewRecord(usableListBaseline, redirectedPage.text);
+    }
+    if (!confirmedMessage && !fileConfirmed && !newRecordConfirmed) {
       const verificationPage = await fetchFollowingRedirects(
         UPLOAD_FORM_URL,
         { method: 'GET', headers: { referer: submitted.url } },
@@ -598,7 +664,7 @@ export async function onRequestPost({ request, env }) {
       fileConfirmed = pageContainsFileName(verificationPage.text, fileName);
     }
 
-    if (!confirmedMessage && !fileConfirmed) {
+    if (!confirmedMessage && !fileConfirmed && !newRecordConfirmed) {
       const diagnostic = makeUploadDiagnostic(submitted, uploadForm, [studentId, password]);
       console.warn('Academy upload was not confirmed', {
         ...diagnostic,
