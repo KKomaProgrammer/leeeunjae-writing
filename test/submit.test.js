@@ -285,6 +285,13 @@ describe('academy login cookie flow', () => {
     expect(await response.json()).toMatchObject({
       ok: false,
       message: expect.stringContaining('실제 등록이 확인되지 않아 성공으로 처리하지 않았습니다'),
+      diagnostic: {
+        status: 200,
+        path: '/m/acam_module/SED3/m_sr01_form_proc.asp',
+        responseLength: expect.any(Number),
+        fileField: 'strFile',
+        fields: ['mode', 'subject'],
+      },
     });
   });
 });

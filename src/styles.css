@@ -471,6 +471,8 @@ input[type="checkbox"] {
   box-shadow: 0 12px 34px rgba(25, 35, 55, 0.14);
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   opacity: 0;
   visibility: hidden;
   transition: 160ms ease;
@@ -480,6 +482,11 @@ input[type="checkbox"] {
   border-color: #e8c7c7;
   color: #8d2d2d;
   background: #fff4f4;
+}
+
+.toast.error.is-visible {
+  max-height: min(52vh, 360px);
+  overflow-y: auto;
 }
 
 .toast.is-visible {

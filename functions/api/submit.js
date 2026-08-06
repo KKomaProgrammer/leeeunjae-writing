@@ -344,6 +344,46 @@ function extractScriptVariable(html, name) {
   return match ? decodeScriptString(match[1]) : null;
 }
 
+function extractPageTitle(html) {
+  const match = String(html ?? '').match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? decodeEntities(match[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim() : '';
+}
+
+function extractScriptLocations(html) {
+  const locations = [];
+  const pattern = /(?:location(?:\.href|\.replace)?|window\.location)\s*(?:=|\()\s*(["'])([^"']+)\1/gi;
+  let match;
+  while ((match = pattern.exec(String(html ?? ''))) && locations.length < 3) {
+    const resolved = resolveAcademyUrl(decodeEntities(match[2]), UPLOAD_FORM_URL);
+    if (resolved) locations.push(new URL(resolved).pathname + new URL(resolved).search);
+  }
+  return [...new Set(locations)];
+}
+
+function redactDiagnostic(value, secrets) {
+  let text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  for (const secret of secrets) {
+    if (secret) text = text.replaceAll(String(secret), '[숨김]');
+  }
+  return text.slice(0, 180);
+}
+
+function makeUploadDiagnostic(submitted, uploadForm, secrets) {
+  const finalUrl = new URL(submitted.url);
+  return {
+    status: submitted.status,
+    path: `${finalUrl.pathname}${finalUrl.search}`,
+    responseLength: submitted.text.length,
+    title: redactDiagnostic(extractPageTitle(submitted.text), secrets),
+    alert: redactDiagnostic(extractAlert(submitted.text), secrets),
+    errorCode: redactDiagnostic(extractScriptVariable(submitted.text, 'strErrCode'), secrets),
+    message: redactDiagnostic(extractScriptVariable(submitted.text, 'strMsg'), secrets),
+    locations: extractScriptLocations(submitted.text),
+    fileField: uploadForm.fileField,
+    fields: [...new Set(uploadForm.fields.map(([name]) => name))].slice(0, 24),
+  };
+}
+
 export function extractLoginFailure(html) {
   const errorCode = extractScriptVariable(html, 'strErrCode');
   if (errorCode !== null) {
@@ -559,14 +599,15 @@ export async function onRequestPost({ request, env }) {
     }
 
     if (!confirmedMessage && !fileConfirmed) {
+      const diagnostic = makeUploadDiagnostic(submitted, uploadForm, [studentId, password]);
       console.warn('Academy upload was not confirmed', {
-        status: submitted.status,
-        finalUrl: submitted.url,
-        fileField: uploadForm.fileField,
+        ...diagnostic,
       });
-      throw new Error(
+      const unconfirmedError = new Error(
         '학원 서버에서 파일 등록 완료를 확인하지 못했습니다. 실제 등록이 확인되지 않아 성공으로 처리하지 않았습니다.',
       );
+      unconfirmedError.diagnostic = diagnostic;
+      throw unconfirmedError;
     }
 
     return json({
@@ -580,6 +621,7 @@ export async function onRequestPost({ request, env }) {
       {
         ok: false,
         message: error instanceof Error ? error.message : '제출 중 오류가 발생했습니다.',
+        ...(error?.diagnostic ? { diagnostic: error.diagnostic } : {}),
       },
       502,
     );

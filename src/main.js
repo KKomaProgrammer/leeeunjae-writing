@@ -263,13 +263,29 @@ function populateInputs() {
   saveState.textContent = stored.draft || stored.meta ? '임시 저장 불러옴' : '자동 임시 저장';
 }
 
-function showToast(message, type = 'success') {
+function showToast(message, type = 'success', duration = 4200) {
   clearTimeout(toastTimer);
   toast.textContent = message;
   toast.className = `toast is-visible ${type}`;
   toastTimer = setTimeout(() => {
     toast.classList.remove('is-visible');
-  }, 4200);
+  }, duration);
+}
+
+function formatSubmitDiagnostic(diagnostic) {
+  if (!diagnostic) return '';
+  const fields = Array.isArray(diagnostic.fields) && diagnostic.fields.length
+    ? diagnostic.fields.join(',')
+    : '없음';
+  const signals = [
+    diagnostic.alert && `alert=${diagnostic.alert}`,
+    diagnostic.errorCode && `code=${diagnostic.errorCode}`,
+    diagnostic.message && `msg=${diagnostic.message}`,
+    Array.isArray(diagnostic.locations) && diagnostic.locations.length
+      ? `이동=${diagnostic.locations.join(',')}`
+      : '',
+  ].filter(Boolean).join(' / ') || '응답문구 없음';
+  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 응답길이=${diagnostic.responseLength}; ${signals}`;
 }
 
 function setBusy(isBusy) {
@@ -357,13 +373,17 @@ form.addEventListener('submit', async (event) => {
     const response = await fetch('/api/submit', { method: 'POST', body: payload });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) {
-      throw new Error(result.message || '제출하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      const error = new Error(
+        `${result.message || '제출하지 못했습니다. 잠시 후 다시 시도해 주세요.'}${formatSubmitDiagnostic(result.diagnostic)}`,
+      );
+      error.hasDiagnostic = Boolean(result.diagnostic);
+      throw error;
     }
 
     form.elements.password.value = '';
     showToast(result.message || '제출되었습니다.');
   } catch (error) {
-    showToast(error.message || '제출하지 못했습니다.', 'error');
+    showToast(error.message || '제출하지 못했습니다.', 'error', error.hasDiagnostic ? 20000 : 4200);
   } finally {
     setBusy(false);
   }
