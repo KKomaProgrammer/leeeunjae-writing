@@ -410,22 +410,22 @@ describe('academy login cookie flow', () => {
                   <option value="7963|C|1020178|C|0000006700000000|C|0000006700000002">66B2(26)-고미성T 7:00</option>
                   <option value="8032|C|1020178|C|0000003800000000|C|0000003800000001">작문-초6(26)</option>
                 </select>
-                <select name="selGtCode" onchange="GetChapter(this.value)"><option value="">선택</option></select>
+                <select name="selGtCode" onchange="GetTermChapter(this.options[selectedIndex].value)"><option value="">선택</option></select>
                 <select name="sel_gtc_chapter"><option value="">선택</option></select>
                 <select name="sel_rfiType"><option value="A">선행</option><option value="B">재시</option></select>
                 <input type="file" name="rfi_file">
               </form>
               <script>
                 function GetClassGradeTerm(pVal) { return '/LMS/SED3/GetClassGradeTerm.asp'; }
-                function GetChapter(pVal) { return '/LMS/SED3/GetGradeTermChapter.asp'; }
+                function GetTermChapter(pVal) { return '/LMS/SED3/GetTermChapter.asp'; }
               </script>
             `);
           case 4:
             return upstreamResponse(`
-              <root><rs><gt_code>GT2026</gt_code><tk_name>Writing</tk_name><tl_name>6</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs></root>
+              <root><rs><gt_code>2544</gt_code><tk_name>Writing</tk_name><tl_name>6</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs></root>
             `);
           case 5:
-            return upstreamResponse('<root><rs><gtc_chapter>37</gtc_chapter></rs><rs><gtc_chapter>38</gtc_chapter></rs><rs><gtc_chapter>39</gtc_chapter></rs><rs><gtc_chapter>40</gtc_chapter></rs></root>');
+            return upstreamResponse('<root><rs><gtc_chapter>17</gtc_chapter></rs><rs><gtc_chapter>18</gtc_chapter></rs><rs><gtc_chapter>19</gtc_chapter></rs><rs><gtc_chapter>20</gtc_chapter></rs></root>');
           case 6:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
           case 7:
@@ -441,7 +441,8 @@ describe('academy login cookie flow', () => {
     const input = new FormData();
     input.set('studentId', 'student');
     input.set('password', 'password');
-    input.set('className', '작문-초6');
+    input.set('className', '66B2');
+    input.set('round', '20');
     input.set('fileName', '작문 파일 format.docx');
     input.set(
       'file',
@@ -461,17 +462,18 @@ describe('academy login cookie flow', () => {
     );
     expect(new Headers(calls[3].init.headers).get('cookie')).toContain('ASPSESSIONIDFRESH=x');
     expect(calls[4].url).toBe(
-      'https://m10.hakwonsarang.co.kr/LMS/SED3/GetGradeTermChapter.asp?pGtCode=GT2026',
+      'https://m10.hakwonsarang.co.kr/LMS/SED3/GetTermChapter.asp?pGtCode=2544',
     );
     const hydratedMultipart = await multipartText(calls[6]);
     expect(hydratedMultipart).toContain('name="procType"\r\n\r\nI');
     expect(hydratedMultipart).toContain(
       'name="selCaClass"\r\n\r\n8032|C|1020178|C|0000003800000000|C|0000003800000001',
     );
-    expect(hydratedMultipart).toContain('name="selGtCode"\r\n\r\nGT2026');
-    expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n40');
+    expect(hydratedMultipart).toContain('name="selGtCode"\r\n\r\n2544');
+    expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n20');
     expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nA');
     expect(hydratedMultipart).toContain('filename="작문 파일 format.docx"');
+    expect(new Headers(calls[6].init.headers).get('user-agent')).toContain('Windows NT 10.0');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {

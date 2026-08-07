@@ -7,8 +7,8 @@ const UPLOAD_PROC_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr0
 const UPLOAD_LIST_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp';
 const GRADE_TERM_URL = 'https://m10.hakwonsarang.co.kr/LMS/SED3/GetClassGradeTerm.asp';
 const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
-const MOBILE_USER_AGENT =
-  'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+const ACADEMY_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
 
 function json(data, status = 200) {
@@ -159,8 +159,8 @@ async function remoteFetch(url, init, jar) {
   const headers = new Headers(init.headers ?? {});
   const cookies = cookieHeader(jar);
   if (cookies) headers.set('cookie', cookies);
-  headers.set('accept-language', 'ko-KR,ko;q=0.9,en;q=0.7');
-  headers.set('user-agent', MOBILE_USER_AGENT);
+  headers.set('accept-language', 'ko,en-US;q=0.9,en;q=0.8');
+  headers.set('user-agent', ACADEMY_USER_AGENT);
 
   const response = await fetch(safeUrl, {
     ...init,
@@ -511,11 +511,13 @@ function chooseClassValue(uploadForm, requestedClassName) {
   const options = uploadForm.selectDiagnostics.selCaClass ?? [];
   if (!options.length) return getFormField(uploadForm, 'selCaClass');
   const requested = normalizeClassLabel(requestedClassName);
+  const writingOptions = options.filter((option) => /작문|writing/i.test(option.text));
+  const candidates = writingOptions.length ? writingOptions : options;
   const matched = requested
-    ? options.find((option) => normalizeClassLabel(option.text).startsWith(requested)) ??
-      options.find((option) => normalizeClassLabel(option.text).includes(requested))
+    ? candidates.find((option) => normalizeClassLabel(option.text).startsWith(requested)) ??
+      candidates.find((option) => normalizeClassLabel(option.text).includes(requested))
     : null;
-  return (matched ?? options.find((option) => option.selected) ?? options[0])?.value ?? '';
+  return (matched ?? candidates.find((option) => option.selected) ?? candidates[0])?.value ?? '';
 }
 
 function xmlTagValue(source, name) {
@@ -1120,6 +1122,9 @@ export async function onRequestPost({ request, env }) {
           'sec-fetch-mode': 'navigate',
           'sec-fetch-site': 'same-origin',
           'sec-fetch-user': '?1',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          priority: 'u=0, i',
           'upgrade-insecure-requests': '1',
         },
         body: multipart.body,
