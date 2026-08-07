@@ -81,23 +81,6 @@ describe('remote upload form extraction', () => {
     ]);
   });
 
-  it('uses one unambiguous static JavaScript value for an empty field', () => {
-    const form = extractUploadForm(`
-      <form method="post">
-        <input type="hidden" name="procType" value="">
-        <input type="hidden" name="selGtCode" value="server-value">
-        <input type="file" name="rfi_file">
-      </form>
-      <script>
-        document.uploadForm.procType.value = "INSERT";
-        document.uploadForm.selGtCode.value = "script-value";
-      </script>
-    `);
-    expect(form.fields).toEqual([
-      ['procType', 'INSERT'],
-      ['selGtCode', 'server-value'],
-    ]);
-  });
 });
 
 describe('academy upload confirmation', () => {
@@ -390,8 +373,58 @@ describe('academy login cookie flow', () => {
           strFile: expect.stringContaining('파일 작문 파일 format.docx'),
         },
         responseScript: '',
+        responseText: '등록 화면으로 돌아갑니다.',
         listBeforeCodes: [],
         listAfterCodes: [],
+      },
+    });
+  });
+
+  it('returns safe diagnostics for an upstream HTTP 500 response', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) return upstreamResponse('<html>login</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
+        if (call === 2) return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
+        if (call === 3) {
+          return upstreamResponse(`
+            <form method="post" action="m_sr01_form_proc.asp">
+              <input type="hidden" name="procType" value="">
+              <input type="file" name="rfi_file">
+            </form>
+          `);
+        }
+        if (call === 4) return upstreamResponse('<div>기존 목록</div>');
+        if (call === 5) {
+          return upstreamResponse('<html><body>ASP 처리 오류</body></html>', { status: 500 });
+        }
+        throw new Error(`Unexpected fetch ${call}`);
+      }),
+    );
+
+    const input = new FormData();
+    input.set('studentId', 'student');
+    input.set('password', 'password');
+    input.set(
+      'file',
+      new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'writing.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    );
+    const response = await onRequestPost({
+      request: new Request('https://eunjaewriting.pages.dev/api/submit', { method: 'POST', body: input }),
+      env: {},
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      message: '제출 서버가 오류를 반환했습니다. (500)',
+      diagnostic: {
+        status: 500,
+        fieldValues: { procType: '', rfi_file: expect.stringContaining('[파일') },
+        responseText: 'ASP 처리 오류',
       },
     });
   });

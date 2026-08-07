@@ -293,7 +293,8 @@ function formatSubmitDiagnostic(diagnostic) {
     ? `결과=${diagnostic.resultPath}(${diagnostic.resultLength || 0}자)`
     : '결과페이지 없음';
   const responseScript = diagnostic.responseScript || '스크립트 없음';
-  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}`;
+  const responseText = diagnostic.responseText || '본문 없음';
+  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}; 응답본문=${responseText}`;
 }
 
 function setBusy(isBusy) {

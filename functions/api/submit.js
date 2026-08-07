@@ -284,30 +284,6 @@ function extractSuccessfulControls(form) {
   return fields;
 }
 
-function extractStaticFieldAssignments(html, fieldNames) {
-  const knownNames = new Map(fieldNames.map((name) => [name.toLowerCase(), name]));
-  const candidates = new Map();
-  const add = (name, value) => {
-    const actualName = knownNames.get(String(name ?? '').toLowerCase());
-    if (!actualName) return;
-    if (!candidates.has(actualName)) candidates.set(actualName, new Set());
-    candidates.get(actualName).add(decodeScriptString(value));
-  };
-
-  const source = String(html ?? '');
-  const propertyPattern = /\b([A-Za-z_$][\w$]*)\.value\s*=\s*(["'])([^"']*)\2/gi;
-  const idPattern = /getElementById\(\s*(["'])([^"']+)\1\s*\)\.value\s*=\s*(["'])([^"']*)\3/gi;
-  const jqueryIdPattern = /\$\(\s*(["'])#([^"']+)\1\s*\)\.val\(\s*(["'])([^"']*)\3\s*\)/gi;
-  let match;
-  while ((match = propertyPattern.exec(source))) add(match[1], match[3]);
-  while ((match = idPattern.exec(source))) add(match[2], match[4]);
-  while ((match = jqueryIdPattern.exec(source))) add(match[2], match[4]);
-
-  return new Map(
-    [...candidates].flatMap(([name, values]) => (values.size === 1 ? [[name, [...values][0]]] : [])),
-  );
-}
-
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -316,12 +292,7 @@ export function extractUploadForm(html) {
     String(html);
   const openingTag = selected.match(/<form\b[^>]*>/i)?.[0] ?? '';
   const formAttributes = parseAttributes(openingTag);
-  let fields = extractSuccessfulControls(selected);
-  const assignedValues = extractStaticFieldAssignments(
-    html,
-    fields.map(([name]) => name),
-  );
-  fields = fields.map(([name, value]) => [name, value || assignedValues.get(name) || '']);
+  const fields = extractSuccessfulControls(selected);
   let fileField = '';
 
   for (const match of selected.matchAll(/<input\b[^>]*>/gi)) {
@@ -474,6 +445,7 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     fields: [...new Set(uploadForm.fields.map(([name]) => name))].slice(0, 24),
     fieldValues: formDataDiagnostic(outgoing, uploadForm.fileField, secrets),
     responseScript: redactDiagnostic(responseScriptSource(submitted.text), secrets, 700),
+    responseText: redactDiagnostic(visiblePageText(submitted.text), secrets, 700),
     listBeforeCodes: beforeCodes,
     listAfterCodes: afterCodes,
     resultPath: resultUrl ? `${resultUrl.pathname}${resultUrl.search}` : '',
@@ -687,7 +659,19 @@ export async function onRequestPost({ request, env }) {
       },
       jar,
     );
-    if (submitted.status >= 400) throw new Error(`제출 서버가 오류를 반환했습니다. (${submitted.status})`);
+    if (submitted.status >= 400) {
+      const diagnostic = makeUploadDiagnostic(
+        submitted,
+        uploadForm,
+        outgoing,
+        [studentId, password],
+        usableListBaseline,
+        null,
+      );
+      const serverError = new Error(`제출 서버가 오류를 반환했습니다. (${submitted.status})`);
+      serverError.diagnostic = diagnostic;
+      throw serverError;
+    }
     if (containsLoginRequiredMessage(submitted.text) || looksLikeLoginPage(submitted.text)) {
       throw new Error('로그인 상태가 유지되지 않았습니다. 다시 시도해 주세요.');
     }
