@@ -80,6 +80,24 @@ describe('remote upload form extraction', () => {
       ['action', 'upload'],
     ]);
   });
+
+  it('uses one unambiguous static JavaScript value for an empty field', () => {
+    const form = extractUploadForm(`
+      <form method="post">
+        <input type="hidden" name="procType" value="">
+        <input type="hidden" name="selGtCode" value="server-value">
+        <input type="file" name="rfi_file">
+      </form>
+      <script>
+        document.uploadForm.procType.value = "INSERT";
+        document.uploadForm.selGtCode.value = "script-value";
+      </script>
+    `);
+    expect(form.fields).toEqual([
+      ['procType', 'INSERT'],
+      ['selGtCode', 'server-value'],
+    ]);
+  });
 });
 
 describe('academy upload confirmation', () => {
@@ -366,6 +384,14 @@ describe('academy login cookie flow', () => {
         responseLength: expect.any(Number),
         fileField: 'strFile',
         fields: ['mode', 'subject'],
+        fieldValues: {
+          mode: 'write',
+          subject: 'Writing',
+          strFile: expect.stringContaining('파일 작문 파일 format.docx'),
+        },
+        responseScript: '',
+        listBeforeCodes: [],
+        listAfterCodes: [],
       },
     });
   });

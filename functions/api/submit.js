@@ -284,6 +284,30 @@ function extractSuccessfulControls(form) {
   return fields;
 }
 
+function extractStaticFieldAssignments(html, fieldNames) {
+  const knownNames = new Map(fieldNames.map((name) => [name.toLowerCase(), name]));
+  const candidates = new Map();
+  const add = (name, value) => {
+    const actualName = knownNames.get(String(name ?? '').toLowerCase());
+    if (!actualName) return;
+    if (!candidates.has(actualName)) candidates.set(actualName, new Set());
+    candidates.get(actualName).add(decodeScriptString(value));
+  };
+
+  const source = String(html ?? '');
+  const propertyPattern = /\b([A-Za-z_$][\w$]*)\.value\s*=\s*(["'])([^"']*)\2/gi;
+  const idPattern = /getElementById\(\s*(["'])([^"']+)\1\s*\)\.value\s*=\s*(["'])([^"']*)\3/gi;
+  const jqueryIdPattern = /\$\(\s*(["'])#([^"']+)\1\s*\)\.val\(\s*(["'])([^"']*)\3\s*\)/gi;
+  let match;
+  while ((match = propertyPattern.exec(source))) add(match[1], match[3]);
+  while ((match = idPattern.exec(source))) add(match[2], match[4]);
+  while ((match = jqueryIdPattern.exec(source))) add(match[2], match[4]);
+
+  return new Map(
+    [...candidates].flatMap(([name, values]) => (values.size === 1 ? [[name, [...values][0]]] : [])),
+  );
+}
+
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -292,7 +316,12 @@ export function extractUploadForm(html) {
     String(html);
   const openingTag = selected.match(/<form\b[^>]*>/i)?.[0] ?? '';
   const formAttributes = parseAttributes(openingTag);
-  const fields = extractSuccessfulControls(selected);
+  let fields = extractSuccessfulControls(selected);
+  const assignedValues = extractStaticFieldAssignments(
+    html,
+    fields.map(([name]) => name),
+  );
+  fields = fields.map(([name, value]) => [name, value || assignedValues.get(name) || '']);
   let fileField = '';
 
   for (const match of selected.matchAll(/<input\b[^>]*>/gi)) {
@@ -397,16 +426,41 @@ function hasNewRecord(beforeHtml, afterHtml) {
   return [...extractRecordCodes(afterHtml)].some((code) => !before.has(code));
 }
 
-function redactDiagnostic(value, secrets) {
+function redactDiagnostic(value, secrets, maxLength = 180) {
   let text = String(value ?? '').replace(/\s+/g, ' ').trim();
   for (const secret of secrets) {
     if (secret) text = text.replaceAll(String(secret), '[숨김]');
   }
-  return text.slice(0, 180);
+  return text.slice(0, maxLength);
 }
 
-function makeUploadDiagnostic(submitted, uploadForm, secrets) {
+function responseScriptSource(html) {
+  return Array.from(String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi), (match) => match[1])
+    .join(' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|\s)\/\/[^\r\n]*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formDataDiagnostic(formData, fileField, secrets) {
+  const values = {};
+  for (const [name, value] of formData) {
+    if (value instanceof File) {
+      values[name] = `[파일 ${value.name}, ${value.size}바이트]`;
+    } else {
+      values[name] = redactDiagnostic(value, secrets, 100);
+    }
+  }
+  if (!values[fileField]) values[fileField] = '[파일 없음]';
+  return values;
+}
+
+function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBaseline, resultPage) {
   const finalUrl = new URL(submitted.url);
+  const resultUrl = resultPage ? new URL(resultPage.url) : null;
+  const beforeCodes = [...extractRecordCodes(listBaseline)].slice(0, 12);
+  const afterCodes = resultPage ? [...extractRecordCodes(resultPage.text)].slice(0, 12) : [];
   return {
     status: submitted.status,
     path: `${finalUrl.pathname}${finalUrl.search}`,
@@ -418,6 +472,12 @@ function makeUploadDiagnostic(submitted, uploadForm, secrets) {
     locations: extractScriptLocations(submitted.text, submitted.url),
     fileField: uploadForm.fileField,
     fields: [...new Set(uploadForm.fields.map(([name]) => name))].slice(0, 24),
+    fieldValues: formDataDiagnostic(outgoing, uploadForm.fileField, secrets),
+    responseScript: redactDiagnostic(responseScriptSource(submitted.text), secrets, 700),
+    listBeforeCodes: beforeCodes,
+    listAfterCodes: afterCodes,
+    resultPath: resultUrl ? `${resultUrl.pathname}${resultUrl.search}` : '',
+    resultLength: resultPage?.text?.length ?? 0,
   };
 }
 
@@ -638,6 +698,7 @@ export async function onRequestPost({ request, env }) {
     let confirmedMessage = extractSubmissionSuccess(submitted.text);
     let fileConfirmed = pageContainsFileName(submitted.text, fileName);
     let newRecordConfirmed = false;
+    let resultPage = null;
     const scriptRedirect = extractScriptRedirectUrls(submitted.text, submitted.url)[0];
     if (!confirmedMessage && !fileConfirmed && scriptRedirect) {
       const redirectedPage = await fetchFollowingRedirects(
@@ -645,6 +706,7 @@ export async function onRequestPost({ request, env }) {
         { method: 'GET', headers: { referer: submitted.url } },
         jar,
       );
+      resultPage = redirectedPage;
       if (containsLoginRequiredMessage(redirectedPage.text) || looksLikeLoginPage(redirectedPage.text)) {
         throw new Error('제출 결과를 확인하는 중 로그인 상태가 해제되었습니다.');
       }
@@ -665,7 +727,14 @@ export async function onRequestPost({ request, env }) {
     }
 
     if (!confirmedMessage && !fileConfirmed && !newRecordConfirmed) {
-      const diagnostic = makeUploadDiagnostic(submitted, uploadForm, [studentId, password]);
+      const diagnostic = makeUploadDiagnostic(
+        submitted,
+        uploadForm,
+        outgoing,
+        [studentId, password],
+        usableListBaseline,
+        resultPage,
+      );
       console.warn('Academy upload was not confirmed', {
         ...diagnostic,
       });
