@@ -10,7 +10,6 @@ const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
-const TRANSPORT_FILE_NAME = 'writing.docx';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -294,6 +293,28 @@ function extractSuccessfulControls(form) {
   return fields;
 }
 
+function extractControlOrder(form) {
+  const controls = [];
+  const pattern = /<input\b[^>]*>|<textarea\b[^>]*>[\s\S]*?<\/textarea>|<select\b[^>]*>[\s\S]*?<\/select>/gi;
+  for (const match of String(form ?? '').matchAll(pattern)) {
+    const control = match[0];
+    const openingTag = control.match(/<(?:input|textarea|select)\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(openingTag);
+    if (!attributes.name || hasHtmlAttribute(openingTag, 'disabled')) continue;
+    if (/^<input/i.test(openingTag)) {
+      const type = (attributes.type ?? 'text').toLowerCase();
+      if (type === 'file') {
+        controls.push({ kind: 'file', name: attributes.name });
+        continue;
+      }
+      if (['submit', 'image', 'button', 'reset'].includes(type)) continue;
+      if (['checkbox', 'radio'].includes(type) && !hasHtmlAttribute(openingTag, 'checked')) continue;
+    }
+    controls.push({ kind: 'field', name: attributes.name });
+  }
+  return controls;
+}
+
 function extractFormSelectDiagnostics(form) {
   const diagnostics = {};
   for (const match of form.matchAll(/<select\b[^>]*>[\s\S]*?<\/select>/gi)) {
@@ -456,6 +477,7 @@ export function extractUploadForm(html) {
     enctype: (formAttributes.enctype || '').toLowerCase(),
     fileField,
     fields,
+    controlOrder: extractControlOrder(selected),
     selectDiagnostics: extractFormSelectDiagnostics(selected),
     selectActions: extractSelectActionHints(selected),
     actionHints: extractSubmitActionHints(html),
@@ -779,6 +801,36 @@ function formDataDiagnostic(formData, fileField, secrets) {
   return values;
 }
 
+function buildOrderedFormData(uploadForm, transportFile) {
+  const outgoing = new FormData();
+  const queues = new Map();
+  for (const [name, value] of uploadForm.fields) {
+    const key = name.toLowerCase();
+    if (!queues.has(key)) queues.set(key, []);
+    queues.get(key).push({ name, value });
+  }
+
+  let fileAdded = false;
+  for (const control of uploadForm.controlOrder) {
+    if (control.kind === 'file') {
+      if (!fileAdded && control.name.toLowerCase() === uploadForm.fileField.toLowerCase()) {
+        outgoing.append(uploadForm.fileField, transportFile, transportFile.name);
+        fileAdded = true;
+      }
+      continue;
+    }
+    const queue = queues.get(control.name.toLowerCase());
+    const field = queue?.shift();
+    if (field) outgoing.append(field.name, field.value);
+  }
+
+  for (const queue of queues.values()) {
+    for (const field of queue) outgoing.append(field.name, field.value);
+  }
+  if (!fileAdded) outgoing.append(uploadForm.fileField, transportFile, transportFile.name);
+  return outgoing;
+}
+
 function multipartHeaderValue(value) {
   return String(value ?? '').replace(/[\r\n]/g, '').replace(/["\\]/g, '_');
 }
@@ -836,7 +888,7 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     formSelectActions: uploadForm.selectActions,
     formRequests: uploadForm.requestHints,
     formHydration: uploadForm.hydrationDiagnostic ?? null,
-    transportFileName: TRANSPORT_FILE_NAME,
+    transportFileName: uploadForm.transportFileName ?? '',
     multipart: uploadForm.multipartDiagnostic ?? null,
     formControls: uploadForm.controlHints.map((value) => redactDiagnostic(value, secrets, 500)),
     formSubmitLogic: redactDiagnostic(uploadForm.submitLogicHints, secrets, 5000),
@@ -1027,17 +1079,19 @@ export async function onRequestPost({ request, env }) {
       throw new Error('학원 제출 화면의 전송 방식이 POST가 아닙니다. 제출 화면이 변경되었을 수 있습니다.');
     }
     await hydrateUploadForm(uploadForm, className, round, jar);
-    const outgoing = new FormData();
-    uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
     const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
-    if (remoteFileNameField) outgoing.set(remoteFileNameField, `C:\\fakepath\\${fileName}`);
-    const transportFile = new File([file], TRANSPORT_FILE_NAME, { type: 'application/octet-stream' });
-    outgoing.set(uploadForm.fileField, transportFile, TRANSPORT_FILE_NAME);
+    if (remoteFileNameField) setFormField(uploadForm, remoteFileNameField, `C:\\fakepath\\${fileName}`);
+    const transportFile = new File([file], fileName, {
+      type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    uploadForm.transportFileName = fileName;
+    const outgoing = buildOrderedFormData(uploadForm, transportFile);
     const multipart = await buildLegacyMultipartBody(outgoing);
     uploadForm.multipartDiagnostic = {
-      mode: 'webkit-compatible-blob',
+      mode: 'webkit-dom-order',
       size: multipart.body.size,
       boundaryPrefix: '----WebKitFormBoundary',
+      fieldOrder: [...outgoing.keys()].slice(0, 24),
     };
 
     const listBeforeSubmission = await fetchFollowingRedirects(
@@ -1060,6 +1114,13 @@ export async function onRequestPost({ request, env }) {
           origin: new URL(UPLOAD_FORM_URL).origin,
           referer: UPLOAD_FORM_URL,
           'content-type': multipart.contentType,
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'cache-control': 'max-age=0',
+          'sec-fetch-dest': 'document',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-site': 'same-origin',
+          'sec-fetch-user': '?1',
+          'upgrade-insecure-requests': '1',
         },
         body: multipart.body,
       },

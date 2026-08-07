@@ -44,6 +44,11 @@ describe('remote upload form extraction', () => {
       ['mode', 'write'],
       ['teacher', 'A&B'],
     ]);
+    expect(form.controlOrder.map((control) => `${control.kind}:${control.name}`)).toEqual([
+      'field:mode',
+      'field:teacher',
+      'file:strFile',
+    ]);
     expect(form.method).toBe('post');
   });
 
@@ -88,6 +93,14 @@ describe('remote upload form extraction', () => {
     expect(form.selectDiagnostics.category).toEqual([
       { value: 'one', text: '1', selected: false },
       { value: 'two', text: '2', selected: true },
+    ]);
+    expect(form.controlOrder.map((control) => `${control.kind}:${control.name}`)).toEqual([
+      'field:mode',
+      'field:subject',
+      'field:notice',
+      'field:memo',
+      'field:category',
+      'file:upfile',
     ]);
   });
 
@@ -304,7 +317,7 @@ describe('academy login cookie flow', () => {
     expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
     const firstMultipart = await multipartText(calls[4]);
     expect(firstMultipart).toContain('name="mode"\r\n\r\nwrite');
-    expect(firstMultipart).toContain('name="strFile"; filename="writing.docx"');
+    expect(firstMultipart).toContain('name="strFile"; filename="작문 파일 format.docx"');
     expect(calls[4].init.body).toBeInstanceOf(Blob);
     expect(new Headers(calls[4].init.headers).get('content-type')).toMatch(
       /^multipart\/form-data; boundary=----WebKitFormBoundary/,
@@ -370,8 +383,10 @@ describe('academy login cookie flow', () => {
     ]);
     const redirectedMultipart = await multipartText(calls[4]);
     expect(redirectedMultipart).toContain('C:\\fakepath\\작문 파일 format.docx');
-    expect(redirectedMultipart).toContain('name="rfi_file"; filename="writing.docx"');
-    expect(redirectedMultipart).toContain('Content-Type: application/octet-stream');
+    expect(redirectedMultipart).toContain('name="rfi_file"; filename="작문 파일 format.docx"');
+    expect(redirectedMultipart).toContain(
+      'Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
   });
 
   it('loads and selects the academy grade term before uploading', async () => {
@@ -456,7 +471,7 @@ describe('academy login cookie flow', () => {
     expect(hydratedMultipart).toContain('name="selGtCode"\r\n\r\nGT2026');
     expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n40');
     expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nA');
-    expect(hydratedMultipart).toContain('filename="writing.docx"');
+    expect(hydratedMultipart).toContain('filename="작문 파일 format.docx"');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
@@ -510,7 +525,7 @@ describe('academy login cookie flow', () => {
         fieldValues: {
           mode: 'write',
           subject: 'Writing',
-          strFile: expect.stringContaining('파일 writing.docx'),
+          strFile: expect.stringContaining('파일 작문 파일 format.docx'),
         },
         responseScript: '',
         responseText: '등록 화면으로 돌아갑니다.',
