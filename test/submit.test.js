@@ -359,7 +359,7 @@ describe('academy login cookie flow', () => {
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
     ]);
-    expect(calls[4].init.body.get('rfi_filename')).toBe('작문 파일 format.docx');
+    expect(calls[4].init.body.get('rfi_filename')).toBe('C:\\fakepath\\작문 파일 format.docx');
     expect(calls[4].init.body.get('rfi_file')).toBeInstanceOf(File);
   });
 
@@ -399,7 +399,7 @@ describe('academy login cookie flow', () => {
               <root><rs><gt_code>GT2026</gt_code><tk_name>Writing</tk_name><tl_name>6</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs></root>
             `);
           case 5:
-            return upstreamResponse('<root><rs><gtc_chapter>12</gtc_chapter></rs></root>');
+            return upstreamResponse('<root><rs><gtc_chapter>37</gtc_chapter></rs><rs><gtc_chapter>38</gtc_chapter></rs><rs><gtc_chapter>39</gtc_chapter></rs><rs><gtc_chapter>40</gtc_chapter></rs></root>');
           case 6:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
           case 7:
@@ -442,7 +442,7 @@ describe('academy login cookie flow', () => {
       '8032|C|1020178|C|0000003800000000|C|0000003800000001',
     );
     expect(calls[6].init.body.get('selGtCode')).toBe('GT2026');
-    expect(calls[6].init.body.get('sel_gtc_chapter')).toBe('12');
+    expect(calls[6].init.body.get('sel_gtc_chapter')).toBe('40');
     expect(calls[6].init.body.get('sel_rfiType')).toBe('A');
   });
 

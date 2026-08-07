@@ -300,11 +300,15 @@ function formatSubmitDiagnostic(diagnostic) {
     ? diagnostic.formRequests.join(',')
     : '없음';
   const formHydration = diagnostic.formHydration ? JSON.stringify(diagnostic.formHydration) : '없음';
+  const formControls = Array.isArray(diagnostic.formControls) && diagnostic.formControls.length
+    ? diagnostic.formControls.join(' | ')
+    : '없음';
+  const formSubmitLogic = diagnostic.formSubmitLogic || '없음';
   const formActions = Array.isArray(diagnostic.formActions) && diagnostic.formActions.length
     ? diagnostic.formActions.join(' | ')
     : '없음';
   const formScript = diagnostic.formScript || '없음';
-  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}; 응답본문=${responseText}; 폼선택지=${formSelects}; 선택동작=${formSelectActions}; 폼요청=${formRequests}; 자동선택=${formHydration}; 제출동작=${formActions}; 폼스크립트=${formScript}`;
+  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}; 응답본문=${responseText}; 폼선택지=${formSelects}; 선택동작=${formSelectActions}; 폼요청=${formRequests}; 자동선택=${formHydration}; 제출요소=${formControls}; 제출동작=${formActions}; 제출스크립트=${formSubmitLogic}; 폼스크립트=${formScript}`;
 }
 
 function setBusy(isBusy) {

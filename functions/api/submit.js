@@ -128,7 +128,15 @@ function remoteCharset(headers) {
 function decodeRemote(buffer, headers) {
   const bytes = new Uint8Array(buffer);
   try {
-    return new TextDecoder(remoteCharset(headers)).decode(bytes);
+    const charset = remoteCharset(headers);
+    const decoded = new TextDecoder(charset).decode(bytes);
+    if ((charset === 'utf-8' || charset === 'utf8') && decoded.includes('\uFFFD')) {
+      const eucKr = new TextDecoder('euc-kr').decode(bytes);
+      const utf8Errors = (decoded.match(/\uFFFD/g) ?? []).length;
+      const eucKrErrors = (eucKr.match(/\uFFFD/g) ?? []).length;
+      if (eucKrErrors < utf8Errors) return eucKr;
+    }
+    return decoded;
   } catch {
     return new TextDecoder('utf-8').decode(bytes);
   }
@@ -375,6 +383,42 @@ function extractSubmitActionHints(html) {
   return [...new Set(hints)];
 }
 
+function extractSubmitControlHints(html) {
+  const hints = [];
+  for (const match of String(html ?? '').matchAll(/<(?:a|button|input)\b[^>]*(?:>[\s\S]*?<\/(?:a|button)>)?/gi)) {
+    const openingTag = match[0].match(/<(?:a|button|input)\b[^>]*>/i)?.[0] ?? match[0];
+    const attributes = parseAttributes(openingTag);
+    const label = decodeEntities(match[0].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+    const summary = [attributes.id, attributes.name, attributes.value, attributes.href, attributes.onclick, label]
+      .filter(Boolean)
+      .join(' ');
+    if (!/(등록|제출|저장|확인|upload|submit|save|procType|form_proc)/i.test(summary)) continue;
+    hints.push(summary.replace(/\s+/g, ' ').trim().slice(0, 500));
+    if (hints.length >= 12) break;
+  }
+  return [...new Set(hints)];
+}
+
+function extractSubmitLogicHints(html) {
+  const source = Array.from(
+    String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+    (match) => match[1],
+  ).join('\n');
+  const snippets = [];
+  const pattern = /procType|m_sr01_form_proc|\.submit\s*\(|ajaxSubmit|btn\w*(?:save|reg|submit)|등록|저장/gi;
+  let match;
+  while ((match = pattern.exec(source)) && snippets.length < 12) {
+    const snippet = source
+      .slice(Math.max(0, match.index - 420), Math.min(source.length, match.index + match[0].length + 720))
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (snippet && !snippets.some((existing) => existing.includes(snippet) || snippet.includes(existing))) {
+      snippets.push(snippet);
+    }
+  }
+  return snippets.join(' || ').slice(0, 7000);
+}
+
 function extractRelevantFormScript(html) {
   const scripts = Array.from(
     String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
@@ -414,6 +458,8 @@ export function extractUploadForm(html) {
     selectDiagnostics: extractFormSelectDiagnostics(selected),
     selectActions: extractSelectActionHints(selected),
     actionHints: extractSubmitActionHints(html),
+    controlHints: extractSubmitControlHints(selected),
+    submitLogicHints: extractSubmitLogicHints(html),
     requestHints: extractFormRequestHints(html),
     chapterRequest: extractChapterRequestHint(html),
     scriptHints: extractRelevantFormScript(html),
@@ -505,7 +551,21 @@ function chooseGradeTerm(terms) {
   );
 }
 
-async function hydrateUploadForm(uploadForm, requestedClassName, jar) {
+function chooseChapterValue(chapters, requestedRound) {
+  if (!chapters.length) return '';
+  const requested = normalizeClassLabel(requestedRound).replace(/회$/, '');
+  if (requested) {
+    const matched = chapters.find((chapter) => normalizeClassLabel(chapter).replace(/회$/, '') === requested);
+    if (matched) return matched;
+  }
+  const numeric = chapters
+    .map((chapter) => ({ chapter, number: Number.parseInt(String(chapter).match(/\d+/)?.[0] ?? '', 10) }))
+    .filter((item) => Number.isFinite(item.number))
+    .sort((left, right) => right.number - left.number);
+  return numeric[0]?.chapter ?? chapters.at(-1) ?? chapters[0];
+}
+
+async function hydrateUploadForm(uploadForm, requestedClassName, requestedRound, jar) {
   const diagnostic = {
     procType: getFormField(uploadForm, 'procType'),
     classValue: '',
@@ -516,6 +576,7 @@ async function hydrateUploadForm(uploadForm, requestedClassName, jar) {
     chapterPath: '',
     chapterStatus: 0,
     chapterCount: 0,
+    chapterValues: [],
     chapter: getFormField(uploadForm, 'sel_gtc_chapter'),
   };
 
@@ -592,9 +653,11 @@ async function hydrateUploadForm(uploadForm, requestedClassName, jar) {
       if (chapterPage.status < 400 && !containsLoginRequiredMessage(chapterPage.text) && !looksLikeLoginPage(chapterPage.text)) {
         const chapters = extractChapterValues(chapterPage.text);
         diagnostic.chapterCount = chapters.length;
-        if (chapters[0]) {
-          setFormField(uploadForm, 'sel_gtc_chapter', chapters[0]);
-          diagnostic.chapter = chapters[0];
+        diagnostic.chapterValues = chapters.slice(0, 20);
+        const selectedChapter = chooseChapterValue(chapters, requestedRound);
+        if (selectedChapter) {
+          setFormField(uploadForm, 'sel_gtc_chapter', selectedChapter);
+          diagnostic.chapter = selectedChapter;
         }
       }
     }
@@ -742,6 +805,8 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     formSelectActions: uploadForm.selectActions,
     formRequests: uploadForm.requestHints,
     formHydration: uploadForm.hydrationDiagnostic ?? null,
+    formControls: uploadForm.controlHints.map((value) => redactDiagnostic(value, secrets, 500)),
+    formSubmitLogic: redactDiagnostic(uploadForm.submitLogicHints, secrets, 5000),
     formActions: uploadForm.actionHints.map((value) => redactDiagnostic(value, secrets, 350)),
     formScript: redactDiagnostic(uploadForm.scriptHints, secrets, 2400),
   };
@@ -849,6 +914,7 @@ export async function onRequestPost({ request, env }) {
     const studentId = String(incoming.get('studentId') ?? '').trim();
     const password = String(incoming.get('password') ?? '');
     const className = String(incoming.get('className') ?? '').trim();
+    const round = String(incoming.get('round') ?? '').trim();
     const file = incoming.get('file');
     const fileName = safeFileName(incoming.get('fileName') || file?.name);
 
@@ -927,11 +993,11 @@ export async function onRequestPost({ request, env }) {
     if (uploadForm.method !== 'post') {
       throw new Error('학원 제출 화면의 전송 방식이 POST가 아닙니다. 제출 화면이 변경되었을 수 있습니다.');
     }
-    await hydrateUploadForm(uploadForm, className, jar);
+    await hydrateUploadForm(uploadForm, className, round, jar);
     const outgoing = new FormData();
     uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
     const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
-    if (remoteFileNameField) outgoing.set(remoteFileNameField, fileName);
+    if (remoteFileNameField) outgoing.set(remoteFileNameField, `C:\\fakepath\\${fileName}`);
     outgoing.set(uploadForm.fileField, file, fileName);
 
     const listBeforeSubmission = await fetchFollowingRedirects(
