@@ -165,6 +165,20 @@ app.innerHTML = `
           </label>
         </div>
 
+        <fieldset class="submission-type">
+          <legend>제출 유형 <b>필수</b></legend>
+          <div class="segmented-control">
+            <label>
+              <input name="rfiType" type="radio" value="A" checked />
+              <span>선행</span>
+            </label>
+            <label>
+              <input name="rfiType" type="radio" value="B" />
+              <span>재시</span>
+            </label>
+          </div>
+        </fieldset>
+
         <label class="filename-option is-disabled" id="filenameOption">
           <input name="useCustomName" type="checkbox" disabled />
           <span class="checkmark" aria-hidden="true"></span>
@@ -204,6 +218,7 @@ const state = {
     studentName: stored.meta?.studentName ?? '',
     className: stored.meta?.className ?? '',
     round: stored.meta?.round ?? '',
+    rfiType: stored.meta?.rfiType === 'B' ? 'B' : 'A',
     useCustomName: Boolean(stored.meta?.useCustomName),
   },
 };
@@ -257,6 +272,7 @@ function populateInputs() {
   ['studentId', 'studentName', 'className', 'round'].forEach((name) => {
     form.elements[name].value = state.meta[name] ?? '';
   });
+  form.elements.rfiType.value = state.meta.rfiType;
   form.elements.useCustomName.checked = state.meta.useCustomName;
   essayCount.textContent = `${state.draft.essay.length.toLocaleString('ko-KR')}자`;
   syncFilenameOption();
@@ -343,6 +359,13 @@ document.querySelectorAll('[data-draft]').forEach((input) => {
   });
 });
 
+form.elements.rfiType.forEach((input) => {
+  input.addEventListener('change', () => {
+    state.meta.rfiType = form.elements.rfiType.value;
+    scheduleSave();
+  });
+});
+
 form.elements.useCustomName.addEventListener('change', () => {
   syncFilenameOption();
   scheduleSave();
@@ -393,6 +416,7 @@ form.addEventListener('submit', async (event) => {
     payload.append('studentName', form.elements.studentName.value.trim());
     payload.append('className', form.elements.className.value.trim());
     payload.append('round', form.elements.round.value.trim());
+    payload.append('rfiType', form.elements.rfiType.value);
     payload.append('fileName', fileName);
 
     const response = await fetch('/api/submit', { method: 'POST', body: payload });

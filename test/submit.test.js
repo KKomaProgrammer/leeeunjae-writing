@@ -255,8 +255,6 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         case 4:
-          return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=old">기존 파일</a>');
-        case 5:
           return upstreamResponse(`<script>alert('제출되었습니다.')</script>`);
         default:
           throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -296,7 +294,6 @@ describe('academy login cookie flow', () => {
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
-      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
     ]);
 
@@ -314,12 +311,12 @@ describe('academy login cookie flow', () => {
     const uploadCookies = calls[2].headers.get('cookie');
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
-    expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
-    const firstMultipart = await multipartText(calls[4]);
+    expect(calls[3].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
+    const firstMultipart = await multipartText(calls[3]);
     expect(firstMultipart).toContain('name="mode"\r\n\r\nwrite');
     expect(firstMultipart).toContain('name="strFile"; filename="작문 파일 format.docx"');
-    expect(calls[4].init.body).toBeInstanceOf(Blob);
-    expect(new Headers(calls[4].init.headers).get('content-type')).toMatch(
+    expect(calls[3].init.body).toBeInstanceOf(Blob);
+    expect(new Headers(calls[3].init.headers).get('content-type')).toMatch(
       /^multipart\/form-data; boundary=----WebKitFormBoundary/,
     );
   });
@@ -345,10 +342,8 @@ describe('academy login cookie flow', () => {
               </form>
             `);
           case 4:
-            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
-          case 5:
             return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
-          case 6:
+          case 5:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
           default:
             throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -377,11 +372,10 @@ describe('academy login cookie flow', () => {
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
-      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
     ]);
-    const redirectedMultipart = await multipartText(calls[4]);
+    const redirectedMultipart = await multipartText(calls[3]);
     expect(redirectedMultipart).toContain('C:\\fakepath\\작문 파일 format.docx');
     expect(redirectedMultipart).toContain('name="rfi_file"; filename="작문 파일 format.docx"');
     expect(redirectedMultipart).toContain(
@@ -427,10 +421,8 @@ describe('academy login cookie flow', () => {
           case 5:
             return upstreamResponse('<root><rs><gtc_chapter>17</gtc_chapter></rs><rs><gtc_chapter>18</gtc_chapter></rs><rs><gtc_chapter>19</gtc_chapter></rs><rs><gtc_chapter>20</gtc_chapter></rs></root>');
           case 6:
-            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
-          case 7:
             return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
-          case 8:
+          case 7:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
           default:
             throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -443,6 +435,7 @@ describe('academy login cookie flow', () => {
     input.set('password', 'password');
     input.set('className', '66B2');
     input.set('round', '20');
+    input.set('rfiType', 'B');
     input.set('fileName', '작문 파일 format.docx');
     input.set(
       'file',
@@ -464,16 +457,16 @@ describe('academy login cookie flow', () => {
     expect(calls[4].url).toBe(
       'https://m10.hakwonsarang.co.kr/LMS/SED3/GetTermChapter.asp?pGtCode=2544',
     );
-    const hydratedMultipart = await multipartText(calls[6]);
+    const hydratedMultipart = await multipartText(calls[5]);
     expect(hydratedMultipart).toContain('name="procType"\r\n\r\nI');
     expect(hydratedMultipart).toContain(
       'name="selCaClass"\r\n\r\n8032|C|1020178|C|0000003800000000|C|0000003800000001',
     );
     expect(hydratedMultipart).toContain('name="selGtCode"\r\n\r\n2544');
     expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n20');
-    expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nA');
+    expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nB');
     expect(hydratedMultipart).toContain('filename="작문 파일 format.docx"');
-    expect(new Headers(calls[6].init.headers).get('user-agent')).toContain('Windows NT 10.0');
+    expect(new Headers(calls[5].init.headers).get('user-agent')).toContain('Windows NT 10.0');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
@@ -493,9 +486,8 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         }
-        if (call === 4) return upstreamResponse('<html><body>기존 파일 목록</body></html>');
-        if (call === 5) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
-        if (call === 6) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
+        if (call === 4) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
+        if (call === 5) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
         throw new Error(`Unexpected fetch ${call}`);
       }),
     );
@@ -553,8 +545,7 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         }
-        if (call === 4) return upstreamResponse('<div>기존 목록</div>');
-        if (call === 5) {
+        if (call === 4) {
           return upstreamResponse('<html><body>ASP 처리 오류</body></html>', { status: 500 });
         }
         throw new Error(`Unexpected fetch ${call}`);

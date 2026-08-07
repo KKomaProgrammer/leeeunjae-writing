@@ -343,6 +343,66 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
+.submission-type {
+  margin: 20px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.submission-type legend {
+  margin-bottom: 8px;
+  color: #3d4657;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.submission-type legend b {
+  margin-left: 3px;
+  color: var(--primary);
+  font-size: 10px;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f3f5f8;
+}
+
+.segmented-control label {
+  position: relative;
+  cursor: pointer;
+}
+
+.segmented-control input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segmented-control span {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.segmented-control input:checked + span {
+  color: var(--primary);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(20, 31, 54, 0.12);
+}
+
+.segmented-control input:focus-visible + span {
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
 .filename-option {
   margin-top: 20px;
   padding: 14px;

@@ -1002,12 +1002,16 @@ export async function onRequestPost({ request, env }) {
     const password = String(incoming.get('password') ?? '');
     const className = String(incoming.get('className') ?? '').trim();
     const round = String(incoming.get('round') ?? '').trim();
+    const rfiType = String(incoming.get('rfiType') ?? 'A').trim().toUpperCase();
     const file = incoming.get('file');
     const fileName = safeFileName(incoming.get('fileName') || file?.name);
 
     if (!studentId || !password) return json({ ok: false, message: 'ID와 비밀번호를 입력해 주세요.' }, 400);
     if (studentId.length > 100 || password.length > 200) {
       return json({ ok: false, message: 'ID 또는 비밀번호가 너무 깁니다.' }, 400);
+    }
+    if (!['A', 'B'].includes(rfiType)) {
+      return json({ ok: false, message: '제출 유형을 다시 선택해 주세요.' }, 400);
     }
     if (!(file instanceof File) || !file.size) {
       return json({ ok: false, message: '제출할 DOCX 파일이 없습니다.' }, 400);
@@ -1081,6 +1085,7 @@ export async function onRequestPost({ request, env }) {
       throw new Error('학원 제출 화면의 전송 방식이 POST가 아닙니다. 제출 화면이 변경되었을 수 있습니다.');
     }
     await hydrateUploadForm(uploadForm, className, round, jar);
+    if (hasFormField(uploadForm, 'sel_rfiType')) setFormField(uploadForm, 'sel_rfiType', rfiType);
     const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
     if (remoteFileNameField) setFormField(uploadForm, remoteFileNameField, `C:\\fakepath\\${fileName}`);
     const transportFile = new File([file], fileName, {
@@ -1095,18 +1100,6 @@ export async function onRequestPost({ request, env }) {
       boundaryPrefix: '----WebKitFormBoundary',
       fieldOrder: [...outgoing.keys()].slice(0, 24),
     };
-
-    const listBeforeSubmission = await fetchFollowingRedirects(
-      UPLOAD_LIST_URL,
-      { method: 'GET', headers: { referer: UPLOAD_FORM_URL } },
-      jar,
-    );
-    const usableListBaseline =
-      listBeforeSubmission.status < 400 &&
-      !containsLoginRequiredMessage(listBeforeSubmission.text) &&
-      !looksLikeLoginPage(listBeforeSubmission.text)
-        ? listBeforeSubmission.text
-        : '';
 
     const submitted = await fetchFollowingRedirects(
       uploadForm.action || UPLOAD_PROC_URL,
@@ -1137,7 +1130,7 @@ export async function onRequestPost({ request, env }) {
         uploadForm,
         outgoing,
         [studentId, password],
-        usableListBaseline,
+        '',
         null,
       );
       const serverError = new Error(`제출 서버가 오류를 반환했습니다. (${submitted.status})`);
@@ -1168,7 +1161,7 @@ export async function onRequestPost({ request, env }) {
       }
       confirmedMessage = extractSubmissionSuccess(redirectedPage.text);
       fileConfirmed = pageContainsFileName(redirectedPage.text, fileName);
-      newRecordConfirmed = Boolean(usableListBaseline) && hasNewRecord(usableListBaseline, redirectedPage.text);
+      newRecordConfirmed = false;
     }
     if (!confirmedMessage && !fileConfirmed && !newRecordConfirmed) {
       const verificationPage = await fetchFollowingRedirects(
@@ -1188,7 +1181,7 @@ export async function onRequestPost({ request, env }) {
         uploadForm,
         outgoing,
         [studentId, password],
-        usableListBaseline,
+        '',
         resultPage,
       );
       console.warn('Academy upload was not confirmed', {
