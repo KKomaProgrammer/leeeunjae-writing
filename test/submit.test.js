@@ -79,6 +79,10 @@ describe('remote upload form extraction', () => {
       ['category', 'two'],
       ['action', 'upload'],
     ]);
+    expect(form.selectDiagnostics.category).toEqual([
+      { value: 'one', text: '1', selected: false },
+      { value: 'two', text: '2', selected: true },
+    ]);
   });
 
 });
@@ -98,6 +102,7 @@ describe('academy upload confirmation', () => {
         <script>var rfi_code = 'R101';</script>
       `)],
     ).toEqual(['R100', 'R101']);
+    expect([...extractRecordCodes(`<script>url += '?rfi_code=' + pRfiCode;</script>`)]).toEqual([]);
   });
 
   it('finds the exact uploaded filename in text or an encoded link', () => {

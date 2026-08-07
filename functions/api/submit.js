@@ -284,6 +284,51 @@ function extractSuccessfulControls(form) {
   return fields;
 }
 
+function extractFormSelectDiagnostics(form) {
+  const diagnostics = {};
+  for (const match of form.matchAll(/<select\b[^>]*>[\s\S]*?<\/select>/gi)) {
+    const openingTag = match[0].match(/<select\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(openingTag);
+    if (!attributes.name) continue;
+    diagnostics[attributes.name] = Array.from(
+      match[0].matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/gi),
+      (optionMatch) => {
+        const optionTag = optionMatch[0].match(/<option\b[^>]*>/i)?.[0] ?? '';
+        const optionAttributes = parseAttributes(optionTag);
+        return {
+          value: optionAttributes.value ?? '',
+          text: decodeEntities(optionMatch[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim(),
+          selected: hasHtmlAttribute(optionTag, 'selected'),
+        };
+      },
+    ).slice(0, 20);
+  }
+  return diagnostics;
+}
+
+function extractSubmitActionHints(html) {
+  const hints = [];
+  for (const match of String(html ?? '').matchAll(/<(?:a|button|input)\b[^>]*>/gi)) {
+    const attributes = parseAttributes(match[0]);
+    const onclick = attributes.onclick ?? '';
+    const value = attributes.value ?? '';
+    if (!onclick || !/(procType|rfi_|selGtCode|sel_gtc_chapter|submit|등록|제출|저장)/i.test(`${onclick} ${value}`)) {
+      continue;
+    }
+    hints.push(onclick.replace(/\s+/g, ' ').trim());
+    if (hints.length >= 8) break;
+  }
+  return [...new Set(hints)];
+}
+
+function extractRelevantFormScript(html) {
+  const scripts = Array.from(
+    String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+    (match) => match[1],
+  ).filter((script) => /(procType|rfi_|selCaClass|selGtCode|sel_gtc_chapter|ajax|form_proc)/i.test(script));
+  return scripts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 2400);
+}
+
 export function extractUploadForm(html) {
   const forms = Array.from(String(html).matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi), (match) => match[0]);
   const selected =
@@ -312,6 +357,9 @@ export function extractUploadForm(html) {
     enctype: (formAttributes.enctype || '').toLowerCase(),
     fileField,
     fields,
+    selectDiagnostics: extractFormSelectDiagnostics(selected),
+    actionHints: extractSubmitActionHints(html),
+    scriptHints: extractRelevantFormScript(html),
   };
 }
 
@@ -386,7 +434,7 @@ export function extractRecordCodes(html) {
         // Keep the raw legacy ASP value when it contains an incomplete percent escape.
       }
       value = value.trim();
-      if (value) codes.add(value);
+      if (/^[A-Za-z0-9_-]{1,100}$/.test(value) && !/prficode/i.test(value)) codes.add(value);
     }
   }
   return codes;
@@ -450,6 +498,9 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     listAfterCodes: afterCodes,
     resultPath: resultUrl ? `${resultUrl.pathname}${resultUrl.search}` : '',
     resultLength: resultPage?.text?.length ?? 0,
+    formSelects: uploadForm.selectDiagnostics,
+    formActions: uploadForm.actionHints.map((value) => redactDiagnostic(value, secrets, 350)),
+    formScript: redactDiagnostic(uploadForm.scriptHints, secrets, 2400),
   };
 }
 

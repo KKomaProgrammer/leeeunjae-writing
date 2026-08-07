@@ -294,7 +294,12 @@ function formatSubmitDiagnostic(diagnostic) {
     : '결과페이지 없음';
   const responseScript = diagnostic.responseScript || '스크립트 없음';
   const responseText = diagnostic.responseText || '본문 없음';
-  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}; 응답본문=${responseText}`;
+  const formSelects = diagnostic.formSelects ? JSON.stringify(diagnostic.formSelects) : '없음';
+  const formActions = Array.isArray(diagnostic.formActions) && diagnostic.formActions.length
+    ? diagnostic.formActions.join(' | ')
+    : '없음';
+  const formScript = diagnostic.formScript || '없음';
+  return `\n진단: HTTP ${diagnostic.status}; 경로=${diagnostic.path}; 파일필드=${diagnostic.fileField || '없음'}; 전송필드=${fields}; 전송값=${fieldValues}; 응답길이=${diagnostic.responseLength}; ${signals}; ${listCheck}; ${resultPage}; 처리스크립트=${responseScript}; 응답본문=${responseText}; 폼선택지=${formSelects}; 제출동작=${formActions}; 폼스크립트=${formScript}`;
 }
 
 function setBusy(isBusy) {
