@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   containsLoginRequiredMessage,
+  extractChapterValues,
+  extractGradeTerms,
   extractLoginFailure,
   extractRecordCodes,
   extractSubmissionSuccess,
@@ -83,6 +85,43 @@ describe('remote upload form extraction', () => {
       { value: 'one', text: '1', selected: false },
       { value: 'two', text: '2', selected: true },
     ]);
+  });
+
+  it('extracts dynamic select actions and ASP request paths', () => {
+    const form = extractUploadForm(`
+      <form method="post">
+        <select name="selGtCode" onchange="GetChapter(this.value)"><option value="">선택</option></select>
+        <input type="file" name="rfi_file">
+      </form>
+      <script>
+        function GetChapter(pVal) { $.get('/LMS/SED3/GetGradeTermChapter.asp', { pGtCode: pVal }); }
+      </script>
+    `);
+    expect(form.selectActions).toEqual({ selGtCode: ['GetChapter(this.value)'] });
+    expect(form.requestHints).toContain('/LMS/SED3/GetGradeTermChapter.asp');
+  });
+
+  it('parses the academy grade-term XML records', () => {
+    expect(
+      extractGradeTerms(`
+        <root>
+          <rs><gt_code>GT2026</gt_code><tk_name><![CDATA[Writing]]></tk_name><tl_name>66B</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs>
+        </root>
+      `),
+    ).toEqual([
+      {
+        code: 'GT2026',
+        book: 'Writing',
+        level: '66B',
+        start: '2026-01-01',
+        end: '2026-12-31',
+      },
+    ]);
+  });
+
+  it('parses chapter values from options or XML records', () => {
+    expect(extractChapterValues('<option value="">선택</option><option value="12">12회</option>')).toEqual(['12']);
+    expect(extractChapterValues('<root><rs><gtc_chapter>13</gtc_chapter></rs></root>')).toEqual(['13']);
   });
 
 });
@@ -324,6 +363,89 @@ describe('academy login cookie flow', () => {
     expect(calls[4].init.body.get('rfi_file')).toBeInstanceOf(File);
   });
 
+  it('loads and selects the academy grade term before uploading', async () => {
+    const calls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url, init) => {
+        calls.push({ url: String(url), init });
+        switch (calls.length) {
+          case 1:
+            return upstreamResponse('<html>login</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
+          case 2:
+            return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
+          case 3:
+            return upstreamResponse(`
+              <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
+                <input type="hidden" name="rfi_code" value="">
+                <input type="hidden" name="procType" value="">
+                <input type="hidden" name="rfi_filename" value="">
+                <select name="selCaClass">
+                  <option value="7963|C|1020178|C|0000006700000000|C|0000006700000002">66B2(26)-고미성T 7:00</option>
+                  <option value="8032|C|1020178|C|0000003800000000|C|0000003800000001">작문-초6(26)</option>
+                </select>
+                <select name="selGtCode" onchange="GetChapter(this.value)"><option value="">선택</option></select>
+                <select name="sel_gtc_chapter"><option value="">선택</option></select>
+                <select name="sel_rfiType"><option value="A">선행</option><option value="B">재시</option></select>
+                <input type="file" name="rfi_file">
+              </form>
+              <script>
+                function GetClassGradeTerm(pVal) { return '/LMS/SED3/GetClassGradeTerm.asp'; }
+                function GetChapter(pVal) { return '/LMS/SED3/GetGradeTermChapter.asp'; }
+              </script>
+            `);
+          case 4:
+            return upstreamResponse(`
+              <root><rs><gt_code>GT2026</gt_code><tk_name>Writing</tk_name><tl_name>6</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs></root>
+            `);
+          case 5:
+            return upstreamResponse('<root><rs><gtc_chapter>12</gtc_chapter></rs></root>');
+          case 6:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
+          case 7:
+            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
+          case 8:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
+          default:
+            throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
+        }
+      }),
+    );
+
+    const input = new FormData();
+    input.set('studentId', 'student');
+    input.set('password', 'password');
+    input.set('className', '작문-초6');
+    input.set('fileName', '작문 파일 format.docx');
+    input.set(
+      'file',
+      new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01])], 'writing.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    );
+
+    const response = await onRequestPost({
+      request: new Request('https://eunjaewriting.pages.dev/api/submit', { method: 'POST', body: input }),
+      env: {},
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls[3].url).toBe(
+      'https://m10.hakwonsarang.co.kr/LMS/SED3/GetClassGradeTerm.asp?pClCode=8032&pGrade=1020178&pCg1=0000003800000000&pCg2=0000003800000001',
+    );
+    expect(new Headers(calls[3].init.headers).get('cookie')).toContain('ASPSESSIONIDFRESH=x');
+    expect(calls[4].url).toBe(
+      'https://m10.hakwonsarang.co.kr/LMS/SED3/GetGradeTermChapter.asp?pGtCode=GT2026',
+    );
+    expect(calls[6].init.body.get('procType')).toBe('I');
+    expect(calls[6].init.body.get('selCaClass')).toBe(
+      '8032|C|1020178|C|0000003800000000|C|0000003800000001',
+    );
+    expect(calls[6].init.body.get('selGtCode')).toBe('GT2026');
+    expect(calls[6].init.body.get('sel_gtc_chapter')).toBe('12');
+    expect(calls[6].init.body.get('sel_rfiType')).toBe('A');
+  });
+
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
     let call = 0;
     vi.stubGlobal(
@@ -428,7 +550,7 @@ describe('academy login cookie flow', () => {
       message: '제출 서버가 오류를 반환했습니다. (500)',
       diagnostic: {
         status: 500,
-        fieldValues: { procType: '', rfi_file: expect.stringContaining('[파일') },
+        fieldValues: { procType: 'I', rfi_file: expect.stringContaining('[파일') },
         responseText: 'ASP 처리 오류',
       },
     });

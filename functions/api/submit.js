@@ -5,6 +5,7 @@ const LOGIN_URL = 'https://m10.hakwonsarang.co.kr/m/login_proc.asp';
 const UPLOAD_FORM_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp';
 const UPLOAD_PROC_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp';
 const UPLOAD_LIST_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp';
+const GRADE_TERM_URL = 'https://m10.hakwonsarang.co.kr/LMS/SED3/GetClassGradeTerm.asp';
 const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -306,6 +307,59 @@ function extractFormSelectDiagnostics(form) {
   return diagnostics;
 }
 
+function extractSelectActionHints(form) {
+  const hints = {};
+  for (const match of String(form ?? '').matchAll(/<select\b[^>]*>/gi)) {
+    const attributes = parseAttributes(match[0]);
+    if (!attributes.name) continue;
+    const actions = ['onchange', 'onclick', 'onblur']
+      .map((name) => attributes[name])
+      .filter(Boolean)
+      .map((value) => value.replace(/\s+/g, ' ').trim());
+    if (actions.length) hints[attributes.name] = actions;
+  }
+  return hints;
+}
+
+function extractFormRequestHints(html) {
+  const scripts = Array.from(
+    String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+    (match) => match[1],
+  ).filter((script) =>
+    /(selCaClass|selGtCode|sel_gtc_chapter|rfi_|ajax|GetClassGradeTerm|GetChapter|GradeTermChapter|pGtCode)/i.test(
+      script,
+    ),
+  );
+  const requests = [];
+  for (const script of scripts) {
+    for (const match of script.matchAll(/["']([^"'<>\r\n]*\.asp(?:\?[^"'<>\r\n]*)?)["']/gi)) {
+      const value = decodeEntities(match[1]).trim();
+      if (value && !requests.includes(value)) requests.push(value);
+      if (requests.length >= 20) return requests;
+    }
+  }
+  return requests;
+}
+
+function extractChapterRequestHint(html) {
+  const source = Array.from(
+    String(html ?? '').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+    (match) => match[1],
+  ).join('\n');
+  const paths = Array.from(
+    source.matchAll(/["']([^"'<>\r\n]*chapter[^"'<>\r\n]*\.asp(?:\?[^"'<>\r\n]*)?)["']/gi),
+    (match) => ({ value: decodeEntities(match[1]).trim(), index: match.index ?? 0 }),
+  );
+  const selected = paths[0];
+  if (!selected) return null;
+  const nearby = source.slice(Math.max(0, selected.index - 1400), selected.index + selected.value.length + 1400);
+  const parameters = [];
+  for (const match of nearby.matchAll(/[?&]([A-Za-z_][\w]*)=/g)) {
+    if (/gt.*code|code.*gt/i.test(match[1]) && !parameters.includes(match[1])) parameters.push(match[1]);
+  }
+  return { path: selected.value, parameters: parameters.length ? parameters.slice(0, 4) : ['pGtCode'] };
+}
+
 function extractSubmitActionHints(html) {
   const hints = [];
   for (const match of String(html ?? '').matchAll(/<(?:a|button|input)\b[^>]*>/gi)) {
@@ -358,9 +412,195 @@ export function extractUploadForm(html) {
     fileField,
     fields,
     selectDiagnostics: extractFormSelectDiagnostics(selected),
+    selectActions: extractSelectActionHints(selected),
     actionHints: extractSubmitActionHints(html),
+    requestHints: extractFormRequestHints(html),
+    chapterRequest: extractChapterRequestHint(html),
     scriptHints: extractRelevantFormScript(html),
   };
+}
+
+function getFormField(uploadForm, name) {
+  return uploadForm.fields.find(([fieldName]) => fieldName.toLowerCase() === name.toLowerCase())?.[1] ?? '';
+}
+
+function hasFormField(uploadForm, name) {
+  return uploadForm.fields.some(([fieldName]) => fieldName.toLowerCase() === name.toLowerCase());
+}
+
+function setFormField(uploadForm, name, value) {
+  const field = uploadForm.fields.find(([fieldName]) => fieldName.toLowerCase() === name.toLowerCase());
+  if (field) field[1] = String(value ?? '');
+  else uploadForm.fields.push([name, String(value ?? '')]);
+}
+
+function normalizeClassLabel(value) {
+  return String(value ?? '').toLocaleLowerCase('ko-KR').replace(/[^0-9a-z가-힣]/g, '');
+}
+
+function chooseClassValue(uploadForm, requestedClassName) {
+  const options = uploadForm.selectDiagnostics.selCaClass ?? [];
+  if (!options.length) return getFormField(uploadForm, 'selCaClass');
+  const requested = normalizeClassLabel(requestedClassName);
+  const matched = requested
+    ? options.find((option) => normalizeClassLabel(option.text).startsWith(requested)) ??
+      options.find((option) => normalizeClassLabel(option.text).includes(requested))
+    : null;
+  return (matched ?? options.find((option) => option.selected) ?? options[0])?.value ?? '';
+}
+
+function xmlTagValue(source, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(source ?? '').match(new RegExp(`<${escapedName}\\b[^>]*>([\\s\\S]*?)<\\/${escapedName}>`, 'i'));
+  return match
+    ? decodeEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1').replace(/<[^>]+>/g, '')).trim()
+    : '';
+}
+
+export function extractGradeTerms(html) {
+  const records = Array.from(String(html ?? '').matchAll(/<rs\b[^>]*>([\s\S]*?)<\/rs>/gi), (match) => match[1]);
+  const sources = records.length ? records : [String(html ?? '')];
+  return sources
+    .map((record) => ({
+      code: xmlTagValue(record, 'gt_code'),
+      book: xmlTagValue(record, 'tk_name'),
+      level: xmlTagValue(record, 'tl_name'),
+      start: xmlTagValue(record, 'gt_startymd'),
+      end: xmlTagValue(record, 'gt_endymd'),
+    }))
+    .filter((term) => term.code);
+}
+
+export function extractChapterValues(html) {
+  const values = [];
+  for (const match of String(html ?? '').matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/gi)) {
+    const openingTag = match[0].match(/<option\b[^>]*>/i)?.[0] ?? '';
+    const attributes = parseAttributes(openingTag);
+    const value = (attributes.value ?? decodeEntities(match[1].replace(/<[^>]+>/g, ' '))).trim();
+    if (value && !values.includes(value)) values.push(value);
+  }
+  for (const name of ['gtc_chapter', 'chapter_code', 'chapter', 'gtc_code']) {
+    const pattern = new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'gi');
+    for (const match of String(html ?? '').matchAll(pattern)) {
+      const value = decodeEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1').replace(/<[^>]+>/g, '')).trim();
+      if (value && !values.includes(value)) values.push(value);
+    }
+  }
+  return values;
+}
+
+function dateDigits(value) {
+  return String(value ?? '').replace(/\D/g, '').slice(0, 8);
+}
+
+function chooseGradeTerm(terms) {
+  if (!terms.length) return null;
+  const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10).replaceAll('-', '');
+  return (
+    terms.find((term) => {
+      const start = dateDigits(term.start);
+      const end = dateDigits(term.end);
+      return start && end && start <= today && today <= end;
+    }) ?? terms[0]
+  );
+}
+
+async function hydrateUploadForm(uploadForm, requestedClassName, jar) {
+  const diagnostic = {
+    procType: getFormField(uploadForm, 'procType'),
+    classValue: '',
+    gradeTermPath: '',
+    gradeTermStatus: 0,
+    gradeTermCount: 0,
+    gradeTermCode: getFormField(uploadForm, 'selGtCode'),
+    chapterPath: '',
+    chapterStatus: 0,
+    chapterCount: 0,
+    chapter: getFormField(uploadForm, 'sel_gtc_chapter'),
+  };
+
+  if (hasFormField(uploadForm, 'procType') && !diagnostic.procType) {
+    setFormField(uploadForm, 'procType', 'I');
+    diagnostic.procType = 'I';
+  }
+
+  const classValue = chooseClassValue(uploadForm, requestedClassName);
+  if (classValue) setFormField(uploadForm, 'selCaClass', classValue);
+  diagnostic.classValue = classValue;
+
+  if (hasFormField(uploadForm, 'selGtCode') && !getFormField(uploadForm, 'selGtCode') && classValue) {
+    const parts = classValue.split('|C|');
+    if (parts.length >= 4) {
+      const url = new URL(GRADE_TERM_URL);
+      url.search = new URLSearchParams({
+        pClCode: parts[0],
+        pGrade: parts[1],
+        pCg1: parts[2],
+        pCg2: parts[3],
+      }).toString();
+      const gradeTermPage = await fetchFollowingRedirects(
+        url.toString(),
+        {
+          method: 'GET',
+          headers: {
+            accept: 'application/xml,text/xml,text/html;q=0.9,*/*;q=0.8',
+            referer: UPLOAD_FORM_URL,
+            'x-requested-with': 'XMLHttpRequest',
+          },
+        },
+        jar,
+      );
+      diagnostic.gradeTermPath = `${url.pathname}${url.search}`;
+      diagnostic.gradeTermStatus = gradeTermPage.status;
+      if (containsLoginRequiredMessage(gradeTermPage.text) || looksLikeLoginPage(gradeTermPage.text)) {
+        throw new Error('평가기간 목록을 불러오는 중 학원 로그인 상태가 해제되었습니다.');
+      }
+      if (gradeTermPage.status >= 400) {
+        throw new Error(`학원 평가기간 목록을 불러오지 못했습니다. (${gradeTermPage.status})`);
+      }
+      const terms = extractGradeTerms(gradeTermPage.text);
+      const selected = chooseGradeTerm(terms);
+      diagnostic.gradeTermCount = terms.length;
+      if (selected) {
+        setFormField(uploadForm, 'selGtCode', selected.code);
+        diagnostic.gradeTermCode = selected.code;
+      }
+    }
+  }
+
+  const gradeTermCode = getFormField(uploadForm, 'selGtCode');
+  if (hasFormField(uploadForm, 'sel_gtc_chapter') && !getFormField(uploadForm, 'sel_gtc_chapter') && gradeTermCode) {
+    const chapterRequest = uploadForm.chapterRequest;
+    const chapterUrlValue = chapterRequest ? resolveAcademyUrl(chapterRequest.path, UPLOAD_FORM_URL) : '';
+    if (chapterUrlValue) {
+      const chapterUrl = new URL(chapterUrlValue);
+      for (const parameter of chapterRequest.parameters) chapterUrl.searchParams.set(parameter, gradeTermCode);
+      const chapterPage = await fetchFollowingRedirects(
+        chapterUrl.toString(),
+        {
+          method: 'GET',
+          headers: {
+            accept: 'application/xml,text/xml,text/html;q=0.9,*/*;q=0.8',
+            referer: UPLOAD_FORM_URL,
+            'x-requested-with': 'XMLHttpRequest',
+          },
+        },
+        jar,
+      );
+      diagnostic.chapterPath = `${chapterUrl.pathname}${chapterUrl.search}`;
+      diagnostic.chapterStatus = chapterPage.status;
+      if (chapterPage.status < 400 && !containsLoginRequiredMessage(chapterPage.text) && !looksLikeLoginPage(chapterPage.text)) {
+        const chapters = extractChapterValues(chapterPage.text);
+        diagnostic.chapterCount = chapters.length;
+        if (chapters[0]) {
+          setFormField(uploadForm, 'sel_gtc_chapter', chapters[0]);
+          diagnostic.chapter = chapters[0];
+        }
+      }
+    }
+  }
+
+  uploadForm.hydrationDiagnostic = diagnostic;
 }
 
 function extractAlert(html) {
@@ -499,6 +739,9 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     resultPath: resultUrl ? `${resultUrl.pathname}${resultUrl.search}` : '',
     resultLength: resultPage?.text?.length ?? 0,
     formSelects: uploadForm.selectDiagnostics,
+    formSelectActions: uploadForm.selectActions,
+    formRequests: uploadForm.requestHints,
+    formHydration: uploadForm.hydrationDiagnostic ?? null,
     formActions: uploadForm.actionHints.map((value) => redactDiagnostic(value, secrets, 350)),
     formScript: redactDiagnostic(uploadForm.scriptHints, secrets, 2400),
   };
@@ -605,6 +848,7 @@ export async function onRequestPost({ request, env }) {
     const incoming = await request.formData();
     const studentId = String(incoming.get('studentId') ?? '').trim();
     const password = String(incoming.get('password') ?? '');
+    const className = String(incoming.get('className') ?? '').trim();
     const file = incoming.get('file');
     const fileName = safeFileName(incoming.get('fileName') || file?.name);
 
@@ -683,6 +927,7 @@ export async function onRequestPost({ request, env }) {
     if (uploadForm.method !== 'post') {
       throw new Error('학원 제출 화면의 전송 방식이 POST가 아닙니다. 제출 화면이 변경되었을 수 있습니다.');
     }
+    await hydrateUploadForm(uploadForm, className, jar);
     const outgoing = new FormData();
     uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
     const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
