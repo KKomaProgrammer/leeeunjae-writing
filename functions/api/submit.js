@@ -859,7 +859,10 @@ async function buildLegacyMultipartBody(formData) {
     }
   }
   chunks.push(`--${boundary}--\r\n`);
-  const body = new Blob(chunks);
+  // A TypedArray gives Cloudflare a fixed-length request body. This matters for
+  // legacy ASP upload handlers that read Request.TotalBytes and cannot parse a
+  // chunked multipart request reliably.
+  const body = new Uint8Array(await new Blob(chunks).arrayBuffer());
   return { body, boundary, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
@@ -1095,8 +1098,9 @@ export async function onRequestPost({ request, env }) {
     const outgoing = buildOrderedFormData(uploadForm, transportFile);
     const multipart = await buildLegacyMultipartBody(outgoing);
     uploadForm.multipartDiagnostic = {
-      mode: 'webkit-dom-order',
-      size: multipart.body.size,
+      mode: 'webkit-dom-order-fixed-length',
+      size: multipart.body.byteLength,
+      fixedLength: true,
       boundaryPrefix: '----WebKitFormBoundary',
       fieldOrder: [...outgoing.keys()].slice(0, 24),
     };
@@ -1109,8 +1113,10 @@ export async function onRequestPost({ request, env }) {
           origin: new URL(UPLOAD_FORM_URL).origin,
           referer: UPLOAD_FORM_URL,
           'content-type': multipart.contentType,
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
           'cache-control': 'max-age=0',
+          'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
           'sec-fetch-dest': 'document',
           'sec-fetch-mode': 'navigate',
           'sec-fetch-site': 'same-origin',

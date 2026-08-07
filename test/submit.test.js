@@ -19,7 +19,9 @@ function upstreamResponse(body, { status = 200, headers = {}, cookies = [] } = {
 }
 
 async function multipartText(call) {
-  return call.init.body.text();
+  return call.init.body instanceof Uint8Array
+    ? new TextDecoder().decode(call.init.body)
+    : call.init.body.text();
 }
 
 afterEach(() => {
@@ -315,7 +317,7 @@ describe('academy login cookie flow', () => {
     const firstMultipart = await multipartText(calls[3]);
     expect(firstMultipart).toContain('name="mode"\r\n\r\nwrite');
     expect(firstMultipart).toContain('name="strFile"; filename="작문 파일 format.docx"');
-    expect(calls[3].init.body).toBeInstanceOf(Blob);
+    expect(calls[3].init.body).toBeInstanceOf(Uint8Array);
     expect(new Headers(calls[3].init.headers).get('content-type')).toMatch(
       /^multipart\/form-data; boundary=----WebKitFormBoundary/,
     );
