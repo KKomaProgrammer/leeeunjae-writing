@@ -10,6 +10,7 @@ const ACADEMY_HOSTS = new Set(['m10.hakwonsarang.co.kr']);
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 const MAX_FILE_SIZE = 8 * 1024 * 1024;
+const TRANSPORT_FILE_NAME = 'writing.docx';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -805,6 +806,7 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     formSelectActions: uploadForm.selectActions,
     formRequests: uploadForm.requestHints,
     formHydration: uploadForm.hydrationDiagnostic ?? null,
+    transportFileName: TRANSPORT_FILE_NAME,
     formControls: uploadForm.controlHints.map((value) => redactDiagnostic(value, secrets, 500)),
     formSubmitLogic: redactDiagnostic(uploadForm.submitLogicHints, secrets, 5000),
     formActions: uploadForm.actionHints.map((value) => redactDiagnostic(value, secrets, 350)),
@@ -998,7 +1000,8 @@ export async function onRequestPost({ request, env }) {
     uploadForm.fields.forEach(([name, value]) => outgoing.append(name, value));
     const remoteFileNameField = uploadForm.fields.find(([name]) => name.toLowerCase() === 'rfi_filename')?.[0];
     if (remoteFileNameField) outgoing.set(remoteFileNameField, `C:\\fakepath\\${fileName}`);
-    outgoing.set(uploadForm.fileField, file, fileName);
+    const transportFile = new File([file], TRANSPORT_FILE_NAME, { type: 'application/octet-stream' });
+    outgoing.set(uploadForm.fileField, transportFile, TRANSPORT_FILE_NAME);
 
     const listBeforeSubmission = await fetchFollowingRedirects(
       UPLOAD_LIST_URL,

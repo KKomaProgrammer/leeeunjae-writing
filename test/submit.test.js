@@ -361,6 +361,8 @@ describe('academy login cookie flow', () => {
     ]);
     expect(calls[4].init.body.get('rfi_filename')).toBe('C:\\fakepath\\작문 파일 format.docx');
     expect(calls[4].init.body.get('rfi_file')).toBeInstanceOf(File);
+    expect(calls[4].init.body.get('rfi_file').name).toBe('writing.docx');
+    expect(calls[4].init.body.get('rfi_file').type).toBe('application/octet-stream');
   });
 
   it('loads and selects the academy grade term before uploading', async () => {
@@ -444,6 +446,7 @@ describe('academy login cookie flow', () => {
     expect(calls[6].init.body.get('selGtCode')).toBe('GT2026');
     expect(calls[6].init.body.get('sel_gtc_chapter')).toBe('40');
     expect(calls[6].init.body.get('sel_rfiType')).toBe('A');
+    expect(calls[6].init.body.get('rfi_file').name).toBe('writing.docx');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
@@ -497,7 +500,7 @@ describe('academy login cookie flow', () => {
         fieldValues: {
           mode: 'write',
           subject: 'Writing',
-          strFile: expect.stringContaining('파일 작문 파일 format.docx'),
+          strFile: expect.stringContaining('파일 writing.docx'),
         },
         responseScript: '',
         responseText: '등록 화면으로 돌아갑니다.',
