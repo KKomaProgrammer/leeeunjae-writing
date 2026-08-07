@@ -18,6 +18,10 @@ function upstreamResponse(body, { status = 200, headers = {}, cookies = [] } = {
   return new Response(body, { status, headers: responseHeaders });
 }
 
+async function multipartText(call) {
+  return call.init.body.text();
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -298,8 +302,13 @@ describe('academy login cookie flow', () => {
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
     expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
-    expect(calls[4].init.body.get('mode')).toBe('write');
-    expect(calls[4].init.body.get('strFile')).toBeInstanceOf(File);
+    const firstMultipart = await multipartText(calls[4]);
+    expect(firstMultipart).toContain('name="mode"\r\n\r\nwrite');
+    expect(firstMultipart).toContain('name="strFile"; filename="writing.docx"');
+    expect(calls[4].init.body).toBeInstanceOf(Blob);
+    expect(new Headers(calls[4].init.headers).get('content-type')).toMatch(
+      /^multipart\/form-data; boundary=----WebKitFormBoundary/,
+    );
   });
 
   it('follows the real JavaScript list redirect and confirms a new record', async () => {
@@ -359,10 +368,10 @@ describe('academy login cookie flow', () => {
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
     ]);
-    expect(calls[4].init.body.get('rfi_filename')).toBe('C:\\fakepath\\작문 파일 format.docx');
-    expect(calls[4].init.body.get('rfi_file')).toBeInstanceOf(File);
-    expect(calls[4].init.body.get('rfi_file').name).toBe('writing.docx');
-    expect(calls[4].init.body.get('rfi_file').type).toBe('application/octet-stream');
+    const redirectedMultipart = await multipartText(calls[4]);
+    expect(redirectedMultipart).toContain('C:\\fakepath\\작문 파일 format.docx');
+    expect(redirectedMultipart).toContain('name="rfi_file"; filename="writing.docx"');
+    expect(redirectedMultipart).toContain('Content-Type: application/octet-stream');
   });
 
   it('loads and selects the academy grade term before uploading', async () => {
@@ -439,14 +448,15 @@ describe('academy login cookie flow', () => {
     expect(calls[4].url).toBe(
       'https://m10.hakwonsarang.co.kr/LMS/SED3/GetGradeTermChapter.asp?pGtCode=GT2026',
     );
-    expect(calls[6].init.body.get('procType')).toBe('I');
-    expect(calls[6].init.body.get('selCaClass')).toBe(
-      '8032|C|1020178|C|0000003800000000|C|0000003800000001',
+    const hydratedMultipart = await multipartText(calls[6]);
+    expect(hydratedMultipart).toContain('name="procType"\r\n\r\nI');
+    expect(hydratedMultipart).toContain(
+      'name="selCaClass"\r\n\r\n8032|C|1020178|C|0000003800000000|C|0000003800000001',
     );
-    expect(calls[6].init.body.get('selGtCode')).toBe('GT2026');
-    expect(calls[6].init.body.get('sel_gtc_chapter')).toBe('40');
-    expect(calls[6].init.body.get('sel_rfiType')).toBe('A');
-    expect(calls[6].init.body.get('rfi_file').name).toBe('writing.docx');
+    expect(hydratedMultipart).toContain('name="selGtCode"\r\n\r\nGT2026');
+    expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n40');
+    expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nA');
+    expect(hydratedMultipart).toContain('filename="writing.docx"');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {

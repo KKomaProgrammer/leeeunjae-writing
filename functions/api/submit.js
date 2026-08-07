@@ -779,6 +779,36 @@ function formDataDiagnostic(formData, fileField, secrets) {
   return values;
 }
 
+function multipartHeaderValue(value) {
+  return String(value ?? '').replace(/[\r\n]/g, '').replace(/["\\]/g, '_');
+}
+
+async function buildLegacyMultipartBody(formData) {
+  const randomPart = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
+  const boundary = `----WebKitFormBoundary${randomPart}`;
+  const chunks = [];
+  for (const [name, value] of formData) {
+    chunks.push(`--${boundary}\r\n`);
+    if (value instanceof File) {
+      chunks.push(
+        `Content-Disposition: form-data; name="${multipartHeaderValue(name)}"; filename="${multipartHeaderValue(value.name)}"\r\n`,
+        `Content-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`,
+        value,
+        '\r\n',
+      );
+    } else {
+      chunks.push(
+        `Content-Disposition: form-data; name="${multipartHeaderValue(name)}"\r\n\r\n`,
+        String(value),
+        '\r\n',
+      );
+    }
+  }
+  chunks.push(`--${boundary}--\r\n`);
+  const body = new Blob(chunks);
+  return { body, boundary, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBaseline, resultPage) {
   const finalUrl = new URL(submitted.url);
   const resultUrl = resultPage ? new URL(resultPage.url) : null;
@@ -807,6 +837,7 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     formRequests: uploadForm.requestHints,
     formHydration: uploadForm.hydrationDiagnostic ?? null,
     transportFileName: TRANSPORT_FILE_NAME,
+    multipart: uploadForm.multipartDiagnostic ?? null,
     formControls: uploadForm.controlHints.map((value) => redactDiagnostic(value, secrets, 500)),
     formSubmitLogic: redactDiagnostic(uploadForm.submitLogicHints, secrets, 5000),
     formActions: uploadForm.actionHints.map((value) => redactDiagnostic(value, secrets, 350)),
@@ -1002,6 +1033,12 @@ export async function onRequestPost({ request, env }) {
     if (remoteFileNameField) outgoing.set(remoteFileNameField, `C:\\fakepath\\${fileName}`);
     const transportFile = new File([file], TRANSPORT_FILE_NAME, { type: 'application/octet-stream' });
     outgoing.set(uploadForm.fileField, transportFile, TRANSPORT_FILE_NAME);
+    const multipart = await buildLegacyMultipartBody(outgoing);
+    uploadForm.multipartDiagnostic = {
+      mode: 'webkit-compatible-blob',
+      size: multipart.body.size,
+      boundaryPrefix: '----WebKitFormBoundary',
+    };
 
     const listBeforeSubmission = await fetchFollowingRedirects(
       UPLOAD_LIST_URL,
@@ -1019,8 +1056,12 @@ export async function onRequestPost({ request, env }) {
       uploadForm.action || UPLOAD_PROC_URL,
       {
         method: 'POST',
-        headers: { origin: new URL(UPLOAD_FORM_URL).origin, referer: UPLOAD_FORM_URL },
-        body: outgoing,
+        headers: {
+          origin: new URL(UPLOAD_FORM_URL).origin,
+          referer: UPLOAD_FORM_URL,
+          'content-type': multipart.contentType,
+        },
+        body: multipart.body,
       },
       jar,
     );
