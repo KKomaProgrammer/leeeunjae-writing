@@ -8,6 +8,7 @@ import {
   extractSubmissionSuccess,
   extractUploadForm,
   looksLikeLoginPage,
+  normalizeAcademyCookieValue,
   onRequestPost,
   pageContainsFileName,
 } from '../functions/api/submit.js';
@@ -29,6 +30,20 @@ afterEach(() => {
 });
 
 describe('remote upload form extraction', () => {
+  it('normalizes the configured SED3 cookie from UTF-8 percent bytes to CP949', () => {
+    expect(
+      normalizeAcademyCookieValue(
+        'SED3',
+        'br%5Fname=%EC%9D%B4%EC%9D%80%EC%9E%AC%EC%96%B4%ED%95%99%ED%95%99%EC%9B%90&st%5Fname=%EC%9D%B4%EC%A4%80%EC%9A%B0',
+      ),
+    ).toBe(
+      'br%5Fname=%C0%CC%C0%BA%C0%E7%BE%EE%C7%D0%C7%D0%BF%F8&st%5Fname=%C0%CC%C1%D8%BF%EC',
+    );
+    expect(normalizeAcademyCookieValue('SED3', 'st%5Fname=%C0%CC%C1%D8%BF%EC')).toBe(
+      'st%5Fname=%C0%CC%C1%D8%BF%EC',
+    );
+  });
+
   it('keeps hidden fields and detects the DOCX input name', () => {
     const form = extractUploadForm(`
       <form method="post" action="m_sr01_form_proc.asp">
@@ -250,13 +265,15 @@ describe('academy login cookie flow', () => {
             { cookies: ['academyAuth=logged-in; Path=/'] },
           );
         case 3:
+          return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=old">기존 파일</a>');
+        case 4:
           return upstreamResponse(`
             <form method="post" action="m_sr01_form_proc.asp">
               <input type="hidden" name="mode" value="write">
               <input type="file" name="strFile">
             </form>
           `);
-        case 4:
+        case 5:
           return upstreamResponse(`<script>alert('제출되었습니다.')</script>`);
         default:
           throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -282,7 +299,7 @@ describe('academy login cookie flow', () => {
       ACADEMY_CONFIGURED_COOKIES_JSON: JSON.stringify([
         { name: 'ASPSESSIONIDSTALE', value: 'stale-session' },
         { name: 'H2', value: 'stale-route' },
-        { name: 'SED3', value: 'branch-state' },
+        { name: 'SED3', value: 'st%5Fname=%EC%9D%B4%EC%A4%80%EC%9A%B0' },
         { name: 'ml1m1', value: '{{ID}}' },
         { name: 'ml2m2', value: '{{PASSWORD}}' },
       ]),
@@ -295,6 +312,7 @@ describe('academy login cookie flow', () => {
     expect(calls.map((call) => [call.url, call.init.method])).toEqual([
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
     ]);
@@ -303,22 +321,22 @@ describe('academy login cookie flow', () => {
     const loginCookies = calls[1].headers.get('cookie');
     expect(loginCookies).toContain('H2=fresh-route');
     expect(loginCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
-    expect(loginCookies).toContain('SED3=branch-state');
+    expect(loginCookies).toContain('SED3=st%5Fname=%C0%CC%C1%D8%BF%EC');
     expect(loginCookies).toContain('ml1m1=student@example');
     expect(loginCookies).toContain('ml2m2=correct%20password');
     expect(loginCookies).not.toContain('stale-session');
     expect(loginCookies).not.toContain('stale-route');
     expect(calls[1].headers.get('referer')).toBe('https://m10.hakwonsarang.co.kr/m/m_login.asp');
 
-    const uploadCookies = calls[2].headers.get('cookie');
+    const uploadCookies = calls[3].headers.get('cookie');
     expect(uploadCookies).toContain('ASPSESSIONIDFRESH=fresh-session');
     expect(uploadCookies).toContain('academyAuth=logged-in');
-    expect(calls[3].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
-    const firstMultipart = await multipartText(calls[3]);
+    expect(calls[4].headers.get('origin')).toBe('https://m10.hakwonsarang.co.kr');
+    const firstMultipart = await multipartText(calls[4]);
     expect(firstMultipart).toContain('name="mode"\r\n\r\nwrite');
     expect(firstMultipart).toContain('name="strFile"; filename="작문 파일 format.docx"');
-    expect(calls[3].init.body).toBeInstanceOf(Uint8Array);
-    expect(new Headers(calls[3].init.headers).get('content-type')).toMatch(
+    expect(calls[4].init.body).toBeInstanceOf(Uint8Array);
+    expect(new Headers(calls[4].init.headers).get('content-type')).toMatch(
       /^multipart\/form-data; boundary=----WebKitFormBoundary/,
     );
   });
@@ -335,6 +353,8 @@ describe('academy login cookie flow', () => {
           case 2:
             return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
           case 3:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
+          case 4:
             return upstreamResponse(`
               <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
                 <input type="hidden" name="rfi_code" value="">
@@ -343,9 +363,9 @@ describe('academy login cookie flow', () => {
                 <input type="file" name="rfi_file">
               </form>
             `);
-          case 4:
-            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
           case 5:
+            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
+          case 6:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
           default:
             throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -373,11 +393,12 @@ describe('academy login cookie flow', () => {
     expect(calls.map((call) => [call.url, call.init.method])).toEqual([
       ['https://m10.hakwonsarang.co.kr/m/m_login.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/login_proc.asp', 'POST'],
+      ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp', 'GET'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form_proc.asp', 'POST'],
       ['https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01.asp', 'GET'],
     ]);
-    const redirectedMultipart = await multipartText(calls[3]);
+    const redirectedMultipart = await multipartText(calls[4]);
     expect(redirectedMultipart).toContain('C:\\fakepath\\작문 파일 format.docx');
     expect(redirectedMultipart).toContain('name="rfi_file"; filename="작문 파일 format.docx"');
     expect(redirectedMultipart).toContain(
@@ -397,6 +418,8 @@ describe('academy login cookie flow', () => {
           case 2:
             return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
           case 3:
+            return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R100">기존 파일</a>');
+          case 4:
             return upstreamResponse(`
               <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
                 <input type="hidden" name="rfi_code" value="">
@@ -416,15 +439,15 @@ describe('academy login cookie flow', () => {
                 function GetTermChapter(pVal) { return '/LMS/SED3/GetTermChapter.asp'; }
               </script>
             `);
-          case 4:
+          case 5:
             return upstreamResponse(`
               <root><rs><gt_code>2544</gt_code><tk_name>Writing</tk_name><tl_name>6</tl_name><gt_startymd>2026-01-01</gt_startymd><gt_endymd>2026-12-31</gt_endymd></rs></root>
             `);
-          case 5:
-            return upstreamResponse('<root><rs><gtc_chapter>17</gtc_chapter></rs><rs><gtc_chapter>18</gtc_chapter></rs><rs><gtc_chapter>19</gtc_chapter></rs><rs><gtc_chapter>20</gtc_chapter></rs></root>');
           case 6:
-            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
+            return upstreamResponse('<root><rs><gtc_chapter>17</gtc_chapter></rs><rs><gtc_chapter>18</gtc_chapter></rs><rs><gtc_chapter>19</gtc_chapter></rs><rs><gtc_chapter>20</gtc_chapter></rs></root>');
           case 7:
+            return upstreamResponse(`<script>location.href='/m/acam_module/SED3/m_sr01.asp';</script>`);
+          case 8:
             return upstreamResponse('<a href="m_sr01_view.asp?rfi_code=R101">작문 파일 format.docx</a>');
           default:
             throw new Error(`Unexpected fetch ${calls.length}: ${url}`);
@@ -452,14 +475,14 @@ describe('academy login cookie flow', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(calls[3].url).toBe(
+    expect(calls[4].url).toBe(
       'https://m10.hakwonsarang.co.kr/LMS/SED3/GetClassGradeTerm.asp?pClCode=8032&pGrade=1020178&pCg1=0000003800000000&pCg2=0000003800000001',
     );
-    expect(new Headers(calls[3].init.headers).get('cookie')).toContain('ASPSESSIONIDFRESH=x');
-    expect(calls[4].url).toBe(
+    expect(new Headers(calls[4].init.headers).get('cookie')).toContain('ASPSESSIONIDFRESH=x');
+    expect(calls[5].url).toBe(
       'https://m10.hakwonsarang.co.kr/LMS/SED3/GetTermChapter.asp?pGtCode=2544',
     );
-    const hydratedMultipart = await multipartText(calls[5]);
+    const hydratedMultipart = await multipartText(calls[6]);
     expect(hydratedMultipart).toContain('name="procType"\r\n\r\nI');
     expect(hydratedMultipart).toContain(
       'name="selCaClass"\r\n\r\n8032|C|1020178|C|0000003800000000|C|0000003800000001',
@@ -468,7 +491,7 @@ describe('academy login cookie flow', () => {
     expect(hydratedMultipart).toContain('name="sel_gtc_chapter"\r\n\r\n20');
     expect(hydratedMultipart).toContain('name="sel_rfiType"\r\n\r\nB');
     expect(hydratedMultipart).toContain('filename="작문 파일 format.docx"');
-    expect(new Headers(calls[5].init.headers).get('user-agent')).toContain('Windows NT 10.0');
+    expect(new Headers(calls[6].init.headers).get('user-agent')).toContain('Windows NT 10.0');
   });
 
   it('does not report success for an unconfirmed HTTP 200 upload response', async () => {
@@ -479,7 +502,8 @@ describe('academy login cookie flow', () => {
         call += 1;
         if (call === 1) return upstreamResponse('<html>login page</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
         if (call === 2) return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
-        if (call === 3) {
+        if (call === 3) return upstreamResponse('<html><body>기존 파일 목록</body></html>');
+        if (call === 4) {
           return upstreamResponse(`
             <form method="post" enctype="multipart/form-data" action="m_sr01_form_proc.asp">
               <input type="hidden" name="mode" value="write">
@@ -488,8 +512,8 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         }
-        if (call === 4) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
-        if (call === 5) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
+        if (call === 5) return upstreamResponse('<html><body>등록 화면으로 돌아갑니다.</body></html>');
+        if (call === 6) return upstreamResponse('<html><body>파일 등록 화면</body></html>');
         throw new Error(`Unexpected fetch ${call}`);
       }),
     );
@@ -539,7 +563,8 @@ describe('academy login cookie flow', () => {
         call += 1;
         if (call === 1) return upstreamResponse('<html>login</html>', { cookies: ['ASPSESSIONIDFRESH=x; Path=/'] });
         if (call === 2) return upstreamResponse('<script>var strMsg=""; var strErrCode="";</script>');
-        if (call === 3) {
+        if (call === 3) return upstreamResponse('<div>기존 목록</div>');
+        if (call === 4) {
           return upstreamResponse(`
             <form method="post" action="m_sr01_form_proc.asp">
               <input type="hidden" name="procType" value="">
@@ -547,9 +572,10 @@ describe('academy login cookie flow', () => {
             </form>
           `);
         }
-        if (call === 4) {
+        if (call === 5) {
           return upstreamResponse('<html><body>ASP 처리 오류</body></html>', { status: 500 });
         }
+        if (call === 6) return upstreamResponse('<div>기존 목록</div>');
         throw new Error(`Unexpected fetch ${call}`);
       }),
     );

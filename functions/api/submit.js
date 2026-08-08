@@ -1,5 +1,7 @@
 const SEND_CONFIGURED_COOKIES = 1;
 
+import iconv from 'iconv-lite';
+
 const LOGIN_PAGE_URL = 'https://m10.hakwonsarang.co.kr/m/m_login.asp';
 const LOGIN_URL = 'https://m10.hakwonsarang.co.kr/m/login_proc.asp';
 const UPLOAD_FORM_URL = 'https://m10.hakwonsarang.co.kr/m/acam_module/SED3/m_sr01_form.asp';
@@ -45,7 +47,7 @@ function collectCookies(headers, jar) {
 }
 
 function cookieHeader(jar) {
-  return Array.from(jar, ([name, value]) => `${name}=${value}`).join('; ');
+  return Array.from(jar, ([name, value]) => `${name}=${normalizeAcademyCookieValue(name, value)}`).join('; ');
 }
 
 function safeCookieValue(value) {
@@ -63,6 +65,30 @@ function safeCookieValue(value) {
 
 function isFreshOnlyCookie(name) {
   return /^ASPSESSIONID/i.test(name) || name.toUpperCase() === 'H2';
+}
+
+export function normalizeAcademyCookieValue(name, value) {
+  const source = String(value ?? '');
+  if (name.toUpperCase() !== 'SED3') return source;
+
+  return source.replace(/(?:%[0-9a-f]{2})+/gi, (encodedRun) => {
+    const bytes = new Uint8Array(
+      Array.from(encodedRun.matchAll(/%([0-9a-f]{2})/gi), (match) => Number.parseInt(match[1], 16)),
+    );
+    if (!bytes.some((byte) => byte >= 0x80)) return encodedRun.toUpperCase();
+
+    let decoded;
+    try {
+      decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      // The cookie is already CP949 or uses another legacy byte sequence.
+      return encodedRun.toUpperCase();
+    }
+
+    return Array.from(iconv.encode(decoded, 'cp949'), (byte) =>
+      `%${byte.toString(16).padStart(2, '0').toUpperCase()}`,
+    ).join('');
+  });
 }
 
 function readSecretCookies(env, studentId, password) {
@@ -90,11 +116,14 @@ function readSecretCookies(env, studentId, password) {
     .filter((cookie) => !isFreshOnlyCookie(cookie.name))
     .map((cookie) => [
       cookie.name,
-      String(cookie.value)
-        .replaceAll('{{ID}}', safeCookieValue(studentId))
-        .replaceAll('{{PASSWORD}}', safeCookieValue(password))
-        .replaceAll('입력했던ID', safeCookieValue(studentId))
-        .replaceAll('입력했던비밀번호', safeCookieValue(password)),
+      normalizeAcademyCookieValue(
+        cookie.name,
+        String(cookie.value)
+          .replaceAll('{{ID}}', safeCookieValue(studentId))
+          .replaceAll('{{PASSWORD}}', safeCookieValue(password))
+          .replaceAll('입력했던ID', safeCookieValue(studentId))
+          .replaceAll('입력했던비밀번호', safeCookieValue(password)),
+      ),
     ]);
 }
 
@@ -893,6 +922,7 @@ function makeUploadDiagnostic(submitted, uploadForm, outgoing, secrets, listBase
     formSelectActions: uploadForm.selectActions,
     formRequests: uploadForm.requestHints,
     formHydration: uploadForm.hydrationDiagnostic ?? null,
+    sessionBootstrap: uploadForm.sessionBootstrapDiagnostic ?? null,
     transportFileName: uploadForm.transportFileName ?? '',
     multipart: uploadForm.multipartDiagnostic ?? null,
     formControls: uploadForm.controlHints.map((value) => redactDiagnostic(value, secrets, 500)),
@@ -1068,9 +1098,22 @@ export async function onRequestPost({ request, env }) {
     const loginFailure = extractLoginFailure(login.text);
     if (loginFailure) throw new Error(loginFailure);
 
+    const listBeforeSubmission = await fetchFollowingRedirects(
+      UPLOAD_LIST_URL,
+      { method: 'GET', headers: { referer: LOGIN_URL } },
+      jar,
+    );
+    if (listBeforeSubmission.status >= 400) {
+      throw new Error(`학원 작문 목록을 불러오지 못했습니다. (${listBeforeSubmission.status})`);
+    }
+    if (containsLoginRequiredMessage(listBeforeSubmission.text) || looksLikeLoginPage(listBeforeSubmission.text)) {
+      throw new Error('학원 작문 화면을 준비하는 중 로그인 상태가 해제되었습니다.');
+    }
+    const usableListBaseline = listBeforeSubmission.text;
+
     const uploadPage = await fetchFollowingRedirects(
       UPLOAD_FORM_URL,
-      { method: 'GET', headers: { referer: LOGIN_URL } },
+      { method: 'GET', headers: { referer: listBeforeSubmission.url } },
       jar,
     );
     if (uploadPage.status >= 400) {
@@ -1081,6 +1124,12 @@ export async function onRequestPost({ request, env }) {
     }
 
     const uploadForm = extractUploadForm(uploadPage.text);
+    uploadForm.sessionBootstrapDiagnostic = {
+      status: listBeforeSubmission.status,
+      path: new URL(listBeforeSubmission.url).pathname,
+      responseLength: listBeforeSubmission.text.length,
+      cookieEncoding: 'cp949-normalized',
+    };
     if (!uploadForm.fileField) {
       throw new Error('학원 제출 화면에서 파일 선택 항목을 찾지 못했습니다. 제출 화면이 변경되었을 수 있습니다.');
     }
@@ -1131,13 +1180,38 @@ export async function onRequestPost({ request, env }) {
       jar,
     );
     if (submitted.status >= 400) {
+      let errorResultPage = null;
+      if (submitted.status === 500) {
+        const verificationPage = await fetchFollowingRedirects(
+          UPLOAD_LIST_URL,
+          { method: 'GET', headers: { referer: submitted.url } },
+          jar,
+        );
+        if (
+          verificationPage.status < 400 &&
+          !containsLoginRequiredMessage(verificationPage.text) &&
+          !looksLikeLoginPage(verificationPage.text)
+        ) {
+          errorResultPage = verificationPage;
+          const fileAppeared =
+            !pageContainsFileName(usableListBaseline, fileName) &&
+            pageContainsFileName(verificationPage.text, fileName);
+          if (fileAppeared || hasNewRecord(usableListBaseline, verificationPage.text)) {
+            return json({
+              ok: true,
+              fileName,
+              message: `${fileName} 파일 등록이 목록에서 확인되었습니다.`,
+            });
+          }
+        }
+      }
       const diagnostic = makeUploadDiagnostic(
         submitted,
         uploadForm,
         outgoing,
         [studentId, password],
-        '',
-        null,
+        usableListBaseline,
+        errorResultPage,
       );
       const serverError = new Error(`제출 서버가 오류를 반환했습니다. (${submitted.status})`);
       serverError.diagnostic = diagnostic;
@@ -1167,7 +1241,7 @@ export async function onRequestPost({ request, env }) {
       }
       confirmedMessage = extractSubmissionSuccess(redirectedPage.text);
       fileConfirmed = pageContainsFileName(redirectedPage.text, fileName);
-      newRecordConfirmed = false;
+      newRecordConfirmed = hasNewRecord(usableListBaseline, redirectedPage.text);
     }
     if (!confirmedMessage && !fileConfirmed && !newRecordConfirmed) {
       const verificationPage = await fetchFollowingRedirects(
@@ -1187,7 +1261,7 @@ export async function onRequestPost({ request, env }) {
         uploadForm,
         outgoing,
         [studentId, password],
-        '',
+        usableListBaseline,
         resultPage,
       );
       console.warn('Academy upload was not confirmed', {
